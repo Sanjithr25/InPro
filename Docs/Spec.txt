@@ -1,0 +1,134 @@
+AI-Based Workflow Management System — Structured Specification
+Overview
+A web application for managing AI agents, tools, tasks, and execution schedules. Users can compose agents from LLMs and skills, wire them into multi-step workflows, schedule execution, and monitor run history.
+________________________________________
+Page 1 — Agent Management
+Layout
+Two-panel layout. Left sidebar lists existing agents grouped by category (e.g., Data, Communication, Code, General). Right panel is the agent creation workspace.
+Agent List (Sidebar)
+•	Agents grouped under collapsible category headers
+•	Each agent card shows: name, LLM badge, active/inactive status
+•	Search/filter bar at top
+•	Click an agent to load it into the right panel for viewing or editing
+Create / Edit Agent (Right Panel)
+Name
+•	Text input with real-time availability check (debounced, shows green checkmark or "name taken" inline)
+Skill
+•	Upload a .md file or paste raw text description into a textarea
+•	Preview renders the markdown inline after upload/input
+Choose LLM
+•	Displays the system default LLM (pulled from LLM Settings, Page 6)
+•	Dropdown to override with any configured model
+•	Shows model provider icon + model name
+Available Tools
+•	Multi-select checkbox list of all registered tools (from Tool Management, Page 2)
+•	Each tool shows its name and a short description tooltip
+User Input
+•	A sample prompt textarea — used for dry run execution
+Dry Run
+•	Execute button triggers the agent with the sample prompt
+•	Shows a loading/streaming state
+Result
+•	Output panel below (or slide-in drawer) showing the agent's response
+•	Displays token usage, latency, and which tools were invoked
+________________________________________
+Page 2 — Tool Management
+Layout
+Two-panel layout. Left sidebar lists available tools. Right panel is the tool creation workspace.
+Tool List (Sidebar)
+•	Each tool shows: name, type/category, enabled/disabled toggle
+•	Search bar at top
+Create / Edit Tool (Right Panel)
+Tool Name
+•	Text input
+Settings
+•	Dynamic key-value configuration fields (e.g., API endpoint, auth token, method type)
+•	Field types: text, secret (masked), dropdown, toggle
+•	Option to add custom parameters as key-value pairs
+•	Test connection button where applicable
+________________________________________
+Page 3 — Task Management
+Layout
+Two-panel layout. Left sidebar lists tasks. Right panel is task creation workspace.
+Task List (Sidebar)
+•	Each task shows: name, assigned agent(s), last run status
+•	Filter by status or agent
+Create / Edit Task (Right Panel)
+Task Name
+•	Text input with real-time availability check (same pattern as agent name)
+Task Description
+•	Textarea describing what the task should accomplish
+Agent Selection
+•	Dropdown or multi-select to assign one or more agents to this task
+•	When multiple agents selected, order matters — displayed as a sortable list
+Create Workflow
+•	Button that sends the task description + selected agents to the LLM
+•	LLM auto-generates a step-by-step workflow (displayed as an editable node/step list)
+•	Each step shows: step number, agent responsible, action description
+•	User can edit, reorder, or delete generated steps
+Dry Run
+•	Executes the workflow once with sample/live data
+•	Streams output per step
+________________________________________
+Page 4 — Task Scheduler
+Layout
+Two-panel layout. Left panel lists all scheduled tasks. Right panel is the schedule creation workspace.
+Scheduled Task List (Left Panel)
+•	Each entry shows: schedule name, trigger type, next run time, enabled/disabled toggle
+•	Filter by trigger type or status
+Create / Edit Schedule (Right Panel)
+Name
+•	Text input for the schedule name
+Select Trigger
+•	Options: Cron expression, Interval (every N minutes/hours), One-time (datetime picker), Webhook (incoming HTTP trigger), Manual
+•	Cron option shows a human-readable preview of the schedule (e.g., "Every day at 9 AM")
+Add Tasks
+•	Select one or more tasks from registered tasks (Page 3)
+•	Tasks are displayed in execution order — sortable drag-and-drop list
+•	Each task entry shows estimated run time if available
+________________________________________
+Page 5 — Task Run History
+Layout
+Full-width table/list view. No creation panel — read-only.
+Display Structure
+Each run entry expands to show detail. Top-level columns:
+•	Schedule Name — name of the schedule that triggered this run
+•	Total Progress — progress bar or fraction (e.g., 3/5 steps completed)
+•	Run On — timestamp (date + time, user's local timezone)
+•	Status — Not Started / Running / Completed
+•	Execution Code — Success / Failed badge
+Expanded row shows:
+•	Individual task breakdown within the run
+•	Per-task status, start time, end time, duration
+•	Logs or stdout output per task (collapsible)
+•	Error message if failed
+Filters
+•	Filter by schedule name, status, execution code, date range
+•	Export to CSV option
+Infrastructure Note
+All tasks are executed inside Docker containers. The UI should surface container ID or run ID for debugging reference.
+________________________________________
+Page 6 — LLM Settings
+Layout
+Full-width settings page organized by provider.
+Provider Cards
+One card per provider: Anthropic, OpenAI, Ollama, Gemini (extensible — allow adding custom providers)
+Each card contains:
+Status Badge
+•	Active (green) or Expired / Unreachable (red) — validated by pinging the provider
+API Key
+•	Masked input field with show/hide toggle and copy button
+•	Save button per field
+Base URL
+•	Editable text field (useful for Ollama or proxied endpoints)
+•	Defaults pre-filled per provider
+Specific Parameters
+•	Key-value pairs for provider-specific config: e.g., temperature, max_tokens, top_p, timeout
+•	Add/remove parameter rows dynamically
+Model Selection
+•	List of available models for that provider (fetched dynamically where API supports it, or manually entered)
+•	Each model has a selectable radio/checkbox
+Set as Default
+•	One provider+model combination can be marked as the system default
+•	Reflected across agent creation (Page 1) and workflow generation (Page 3)
+
