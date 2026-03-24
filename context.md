@@ -83,8 +83,23 @@ chat(messages, tools?, options?): Promise<ChatResponse>
 ```
 
 ### `ToolRegistry` (`src/engine/ToolRegistry.ts`)
-- **Phase 1 stub** — returns a placeholder response for any tool call
-- Phase 2 will load real handler modules, decrypt `tools.config`, and call the actual integration
+- Routes tool calls from agents to their implementation.
+- **Priority 1: Built-in Tools** — matched by name (e.g., `web_search`, `calculator`).
+- **Priority 2: Custom HTTP Tools** — if the tool config has an `endpoint` or `url`, the registry sends a POST request with the tool's expected JSON payload.
+- **Priority 3: Placeholder** — returns a structured "not implemented" message if no handler is found.
+
+### Built-in Tool Catalog (`src/engine/builtins.ts`)
+The system ships with the following built-in tools:
+
+| Tool | Category | Icon | Tagline |
+|---|---|---|---|
+| `web_search` | Search | 🔍 | Search the web with DuckDuckGo (no key needed) |
+| `http_request` | Network | 🌐 | Make HTTP requests to any API endpoint |
+| `calculator` | Math & Data | 🧮 | Evaluate mathematical expressions safely |
+| `read_file` | Files | 📄 | Read file contents from disk |
+| `write_file` | Files | 💾 | Write or create a file on disk |
+| `run_command` | System | 💻 | Execute shell commands (caution!) |
+| `get_datetime` | System | 🕒 | Get current date/time in various formats |
 
 ---
 
@@ -207,7 +222,7 @@ All routes are under the Express API at `http://localhost:3001`.
 | Page | Route | Status |
 |---|---|---|
 | Agents | `/agents` | ✅ Full CRUD + Dry Run |
-| Tools | `/tools` | 🔲 Next up |
+| Tools | /tools | ✅ Full (w/ Library) |
 | Tasks | `/tasks` | 🔲 Stub |
 | Scheduler | `/scheduler` | 🔲 Stub |
 | Run History | `/history` | 🔲 Stub |
@@ -251,7 +266,8 @@ InPro/
 │   │       ├── engine/
 │   │       │   ├── AgentNode.ts           # Agentic loop (no subprocess)
 │   │       │   ├── LLMProviderFactory.ts  # Factory: ollama|openai|anthropic
-│   │       │   └── ToolRegistry.ts        # Phase 1 stub
+│   │       │   └── ToolRegistry.ts        # Built-ins + Custom HTTP discovery
+│   │       └── builtins.ts            # Implementations: web_search, calc, etc.
 │   │       └── routes/
 │   │           ├── agents.ts       # CRUD + /run
 │   │           ├── tools.ts        # CRUD
@@ -262,8 +278,8 @@ InPro/
 │           │   ├── layout.tsx
 │           │   ├── agents/page.tsx   # ✅ Full
 │           │   ├── settings/page.tsx # ✅ Full
-│           │   ├── tools/page.tsx    # 🔲 Next
-│           │   ├── tasks/page.tsx    # 🔲 Stub
+│           │   ├── tools/page.tsx    # ✅ Full (w/ Library)
+│           │   ├── tasks/page.tsx    # 🔲 Nextup
 │           │   ├── scheduler/page.tsx
 │           │   └── history/page.tsx
 │           ├── components/Sidebar.tsx
@@ -306,10 +322,10 @@ npm run dev:web   # → http://localhost:3000
 | Phase | Description | Status |
 |---|---|---|
 | 1 | Walking skeleton: monorepo, DB, AgentNode, API, basic UI | ✅ Complete |
-| 2 | **Tool Layer**: real ToolRegistry, tool CRUD UI, dynamic JSON schema → LLM | 🔄 In progress |
-| 3 | Orchestration: `TaskNode` linear chaining, end-to-end task dry runs | 🔲 |
+| 2 | Tool Layer: built-ins library, tool CRUD UI, dynamic registry | ✅ Complete |
+| 3 | **Orchestration**: `TaskNode` linear chaining, multi-agent runs | 🔄 Next up |
 | 4 | Async dispatch: Redis + BullMQ, non-blocking frontend polling | 🔲 |
-| 5 | Observability: Run History UI, polymorphic execution_runs tree rendering | 🔲 |
+| 5 | Observability: Run History UI, polymorphic execution_runs tree | 🔲 |
 
 ---
 
