@@ -37,11 +37,54 @@ export const agentsApi = {
 };
 
 // ─── Tools ────────────────────────────────────────────────────────────────────
-export type ToolRow = { id: string; name: string; description: string; is_enabled: boolean };
+export type ConfigField = {
+  key: string;
+  value: string;
+  type: 'text' | 'secret' | 'select' | 'toggle';
+  options?: string[]; // for select type
+};
+
+export type ToolRow = {
+  id: string;
+  name: string;
+  description: string;
+  is_enabled: boolean;
+  schema: Record<string, unknown>;
+  config: Record<string, unknown>;   // key-value config
+  created_at: string;
+};
 
 export const toolsApi = {
   list: () => req<ToolRow[]>('/api/tools'),
+  get:  (id: string) => req<ToolRow>(`/api/tools/${id}`),
+  create: (body: Omit<ToolRow, 'id' | 'created_at'>) =>
+    req<{ id: string }>('/api/tools', { method: 'POST', body: JSON.stringify(body) }),
+  update: (id: string, body: Partial<Omit<ToolRow, 'id' | 'created_at'>>) =>
+    req<{ updated: boolean }>(`/api/tools/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  delete: (id: string) =>
+    req<{ deleted: boolean }>(`/api/tools/${id}`, { method: 'DELETE' }),
+  toggle: (id: string, is_enabled: boolean) =>
+    req<{ updated: boolean }>(`/api/tools/${id}`, { method: 'PUT', body: JSON.stringify({ is_enabled }) }),
 };
+
+export type BuiltInToolDef = {
+  name: string;
+  category: string;
+  description: string;
+  schema: Record<string, unknown>;
+  defaultConfig: Record<string, unknown>;
+  icon: string;
+  tagline: string;
+};
+
+export const builtinsApi = {
+  list: () => req<BuiltInToolDef[]>('/api/tools/builtins'),
+  install: (name: string) =>
+    req<{ id: string; installed: boolean; note?: string }>(
+      `/api/tools/builtins/${name}/install`, { method: 'POST' }
+    ),
+};
+
 
 // ─── LLM Settings ────────────────────────────────────────────────────────────
 export type LlmSettingRow = {

@@ -406,3 +406,78 @@ body {
 }
 .empty-state svg { opacity: 0.3; }
 .empty-state p { font-size: 13px; }
+
+/* ─── Toggle switch ──────────────────────────────────────────────────────── */
+.toggle-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.toggle {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  flex-shrink: 0;
+}
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle-track {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 100px;
+  cursor: pointer;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.toggle input:checked + .toggle-track {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.toggle-track::after {
+  content: '';
+  position: absolute;
+  top: 2px; left: 3px;
+  width: 16px; height: 16px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform var(--dur) var(--ease);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+}
+.toggle input:checked + .toggle-track::after {
+  transform: translateX(16px);
+}
+
+/* ─── Key-value rows ─────────────────────────────────────────────────────── */
+.kv-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.kv-row:last-child { margin-bottom: 0; }
+
+/* ─── Field type selector pill ───────────────────────────────────────────── */
+.type-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 100px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--dur) var(--ease);
+  user-select: none;
+  white-space: nowrap;
+}
+.type-pill:hover { border-color: var(--text-muted); color: var(--text-secondary); }
+.type-pill.secret { border-color: rgba(234,179,8,0.4); color: var(--yellow); background: rgba(234,179,8,0.08); }
+.type-pill.select { border-color: rgba(59,130,246,0.4); color: var(--blue); background: rgba(59,130,246,0.08); }
+.type-pill.toggle { border-color: rgba(34,197,94,0.4); color: var(--green); background: rgba(34,197,94,0.08); }
+

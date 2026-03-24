@@ -2,10 +2,42 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import pool from '../db/client.js';
+import { BUILT_IN_TOOLS } from '../engine/builtins.js';
 
 const router = Router();
 const handle = (fn: (req: Request, res: Response) => Promise<void>) =>
   (req: Request, res: Response, next: NextFunction) => fn(req, res).catch(next);
+
+// ─── GET /api/tools/builtins ─────────────────────────────────────────────────
+// Returns the catalog of built-in tools (without execute functions).
+router.get('/builtins', handle(async (_req, res) => {
+  const catalog = BUILT_IN_TOOLS.map(({ execute: _exec, ...rest }) => rest);
+  res.json({ data: catalog });
+}));
+
+// ─── POST /api/tools/builtins/:name/install ───────────────────────────────────
+// Installs a built-in tool into the user's tool library (inserts into DB).
+// Idempotent: if a tool with this name already exists, returns the existing id.
+router.post('/builtins/:name/install', handle(async (req, res) => {
+  const tool = BUILT_IN_TOOLS.find(t => t.name === req.params.name);
+  if (!tool) { res.status(404).json({ error: `No built-in tool named "${req.params.name}"` }); return; }
+
+  const { execute: _exec, icon: _icon, tagline: _tagline, category: _cat, ...rest } = tool;
+
+  // Check if already installed
+  const existing = await pool.query(`SELECT id FROM tools WHERE name = $1`, [rest.name]);
+  if (existing.rows.length > 0) {
+    res.json({ data: { id: existing.rows[0].id, installed: false, note: 'Already installed' } });
+    return;
+  }
+
+  const id = uuidv4();
+  await pool.query(
+    `INSERT INTO tools (id, name, description, schema, config, is_enabled) VALUES ($1,$2,$3,$4,$5,$6)`,
+    [id, rest.name, rest.description, JSON.stringify(rest.schema), JSON.stringify(rest.defaultConfig), true]
+  );
+  res.status(201).json({ data: { id, installed: true } });
+}));
 
 // GET /api/tools
 router.get('/', handle(async (_req, res) => {
