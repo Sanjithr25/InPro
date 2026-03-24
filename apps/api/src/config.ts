@@ -27,5 +27,6 @@ export const config = {
     model: process.env.LLM_MODEL ?? 'llama3.2',
     anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
     openaiApiKey: process.env.OPENAI_API_KEY ?? '',
+    ollamaApiKey: process.env.OLLAMA_API_KEY ?? '',
   },
 } as const;

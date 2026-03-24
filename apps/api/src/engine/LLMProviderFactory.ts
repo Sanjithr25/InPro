@@ -167,9 +167,9 @@ export class LLMProviderFactory {
 
     switch (provider) {
       case 'ollama': {
-        // Ollama exposes an OpenAI-compatible API — no key needed
         const baseURL = overrides?.baseUrl ?? 'http://localhost:11434/v1';
-        const client = new OpenAI({ apiKey: 'ollama', baseURL });
+        const apiKey = overrides?.apiKey ?? (config.llm as any).ollamaApiKey ?? 'ollama';
+        const client = new OpenAI({ apiKey, baseURL });
         return makeOpenAICompatibleProvider(client, model);
       }
 
@@ -186,8 +186,16 @@ export class LLMProviderFactory {
         return makeAnthropicProvider(apiKey, model);
       }
 
-      default:
-        throw new Error(`Unknown LLM provider: "${provider}". Valid: ollama | openai | anthropic`);
+      default: {
+        // Fallback: If we have a base_url, treat any unknown provider as OpenAI-compatible
+        const baseURL = overrides?.baseUrl;
+        if (baseURL) {
+          const apiKey = overrides?.apiKey || '';
+          const client = new OpenAI({ apiKey, baseURL });
+          return makeOpenAICompatibleProvider(client, model);
+        }
+        throw new Error(`Unknown LLM provider: "${provider}". Valid: ollama | openai | anthropic. Or provide a Base URL for a generic OpenAI-compatible API.`);
+      }
     }
   }
 }

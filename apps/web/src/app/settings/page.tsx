@@ -4,12 +4,14 @@ import { useEffect, useState } from 'react';
 import { Settings2, Key, Eye, EyeOff, Save, CheckCircle2, Circle, Plus } from 'lucide-react';
 import { llmApi, type LlmSettingRow } from '@/lib/api';
 
-const PROVIDER_LABELS: Record<string, { label: string; icon: string; defaultModel: string; defaultBase?: string }> = {
-
-  anthropic: { label: 'Anthropic',  icon: '🟠', defaultModel: 'claude-opus-4-5',         defaultBase: undefined },
-  openai:    { label: 'OpenAI',     icon: '🟢', defaultModel: 'gpt-4o',                  defaultBase: undefined },
-  gemini:    { label: 'Gemini',     icon: '🔵', defaultModel: 'gemini-2.0-flash',        defaultBase: undefined },
-  ollama:    { label: 'Ollama',     icon: '🦙', defaultModel: 'llama3.2',                defaultBase: 'http://localhost:11434' },
+const PROVIDER_LABELS: Record<string, { label: string; icon: string; defaultModel: string; defaultBase?: string; suggestedModels?: string[] }> = {
+  anthropic: { label: 'Anthropic',  icon: '🟠', defaultModel: 'claude-3-5-sonnet-20241022', defaultBase: undefined, suggestedModels: ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'] },
+  openai:    { label: 'OpenAI',     icon: '🟢', defaultModel: 'gpt-4o',                  defaultBase: undefined, suggestedModels: ['gpt-4o', 'gpt-4o-mini', 'o1-preview'] },
+  gemini:    { label: 'Gemini',     icon: '🔵', defaultModel: 'gemini-2.0-flash',        defaultBase: undefined, suggestedModels: ['gemini-2.0-flash', 'gemini-1.5-pro'] },
+  ollama:    { label: 'Ollama',     icon: '🦙', defaultModel: 'llama3.2',                defaultBase: 'http://localhost:11434/v1', suggestedModels: ['llama3.2', 'glm-5:cloud'] },
+  groq:      { label: 'Groq',       icon: '⚡', defaultModel: 'llama-3.3-70b-versatile', defaultBase: 'https://api.groq.com/openai/v1', suggestedModels: ['llama-3.3-70b-versatile', 'mixtral-8x7b-32768'] },
+  deepseek:  { label: 'DeepSeek',   icon: '🐳', defaultModel: 'deepseek-chat',           defaultBase: 'https://api.deepseek.com/v1', suggestedModels: ['deepseek-chat', 'deepseek-reasoner'] },
+  'openai-compatible': { label: 'Generic OpenAI', icon: '🤖', defaultModel: 'model-name', defaultBase: 'http://custom-api:8080/v1' },
 };
 
 function ProviderCard({ setting, onSaved }: { setting: LlmSettingRow; onSaved: () => void }) {
@@ -104,6 +106,20 @@ function ProviderCard({ setting, onSaved }: { setting: LlmSettingRow; onSaved: (
           value={model}
           onChange={e => setModel(e.target.value)}
         />
+        {meta.suggestedModels && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+            {meta.suggestedModels.map(sm => (
+              <button
+                key={sm}
+                className={`badge ${model === sm ? 'badge-primary' : 'badge-outline'}`}
+                style={{ cursor: 'pointer', border: '1px solid var(--border)', background: model === sm ? 'var(--accent)' : 'transparent', color: model === sm ? '#fff' : 'var(--text-muted)' }}
+                onClick={() => setModel(sm)}
+              >
+                {sm}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Actions */}
