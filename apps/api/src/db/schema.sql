@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS agents (
   name             TEXT NOT NULL UNIQUE,
   skill            TEXT NOT NULL DEFAULT '',    -- System prompt / .md skill text
   llm_provider_id  UUID REFERENCES llm_settings(id) ON DELETE SET NULL,
-  model_name       TEXT NOT NULL DEFAULT '',    -- Override; empty = use provider default
+  agent_group      TEXT NOT NULL DEFAULT '',    -- Group multiple agents
   created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

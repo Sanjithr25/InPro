@@ -55,7 +55,7 @@ export class AgentNode implements IExecutableNode {
           providerOverride = {
             provider: s.provider,
             apiKey: s.api_key,
-            model: agent.model_name || s.model_name,
+            model: s.model_name,
             baseUrl: s.base_url ?? undefined,
           };
         }
@@ -69,7 +69,7 @@ export class AgentNode implements IExecutableNode {
           providerOverride = {
             provider: s.provider,
             apiKey: s.api_key,
-            model: agent.model_name || s.model_name,
+            model: s.model_name,
             baseUrl: s.base_url ?? undefined,
           };
         }

@@ -35,7 +35,7 @@ export interface ToolDefinition {
 
 export interface Agent {
   id: string; name: string; skill: string;
-  llm_provider_id: string; model_name: string;
+  llm_provider_id: string; agent_group: string;
   created_at: string; updated_at: string;
 }
 

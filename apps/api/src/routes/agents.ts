@@ -14,7 +14,7 @@ const handle = (fn: (req: Request, res: Response) => Promise<void>) =>
 // ─── GET /api/agents ──────────────────────────────────────────────────────────
 router.get('/', handle(async (_req, res) => {
   const { rows } = await pool.query(
-    `SELECT a.id, a.name, a.skill, a.model_name, a.created_at,
+    `SELECT a.id, a.name, a.skill, a.agent_group, a.created_at,
             l.provider AS llm_provider, l.model_name AS provider_model
      FROM agents a
      LEFT JOIN llm_settings l ON a.llm_provider_id = l.id
@@ -26,7 +26,7 @@ router.get('/', handle(async (_req, res) => {
 // ─── GET /api/agents/:id ──────────────────────────────────────────────────────
 router.get('/:id', handle(async (req, res) => {
   const { rows } = await pool.query(
-    `SELECT a.id, a.name, a.skill, a.model_name, a.created_at,
+    `SELECT a.id, a.name, a.skill, a.agent_group, a.created_at,
             l.provider AS llm_provider, l.id AS llm_provider_id,
             COALESCE(
               JSON_AGG(JSON_BUILD_OBJECT('id', t.id, 'name', t.name, 'description', t.description))
@@ -49,7 +49,7 @@ const CreateAgentSchema = z.object({
   name: z.string().min(1).max(100),
   skill: z.string().default(''),
   llm_provider_id: z.string().uuid().optional(),
-  model_name: z.string().default(''),
+  agent_group: z.string().default(''),
   tool_ids: z.array(z.string().uuid()).default([]),
 });
 
@@ -57,13 +57,13 @@ router.post('/', handle(async (req, res) => {
   const parsed = CreateAgentSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.flatten() }); return; }
 
-  const { name, skill, llm_provider_id, model_name, tool_ids } = parsed.data;
+  const { name, skill, llm_provider_id, agent_group, tool_ids } = parsed.data;
   const id = uuidv4();
 
   await pool.query(
-    `INSERT INTO agents (id, name, skill, llm_provider_id, model_name)
+    `INSERT INTO agents (id, name, skill, llm_provider_id, agent_group)
      VALUES ($1, $2, $3, $4, $5)`,
-    [id, name, skill, llm_provider_id ?? null, model_name]
+    [id, name, skill, llm_provider_id ?? null, agent_group]
   );
 
   if (tool_ids.length > 0) {

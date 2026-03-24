@@ -12,11 +12,12 @@ async function req<T>(path: string, options?: RequestInit): Promise<T> {
 
 // ─── Agents ──────────────────────────────────────────────────────────────────
 export type AgentRow = {
-  id: string; name: string; skill: string; model_name: string;
-  llm_provider?: string; llm_provider_id?: string;
+  id: string; name: string; skill: string; agent_group: string;
+  llm_provider?: string; llm_provider_id?: string; provider_model?: string;
   tools?: { id: string; name: string; description: string }[];
   created_at: string;
 };
+
 
 export const agentsApi = {
   list: () => req<AgentRow[]>('/api/agents'),

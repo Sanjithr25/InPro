@@ -1,34 +1,34 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
-import { Bot, Plus, Play, Save, Trash2, ChevronRight, Zap, Clock, Hash } from 'lucide-react';
+import { useEffect, useState, useCallback, useRef } from 'react';
+import { Bot, Plus, Play, Save, Trash2, ChevronRight, Zap, Clock, Hash, Upload, X } from 'lucide-react';
 import { agentsApi, toolsApi, llmApi, type AgentRow, type ToolRow, type LlmSettingRow } from '@/lib/api';
 
 // ─── Initial state ────────────────────────────────────────────────────────────
 const blank = (): Partial<AgentRow> & { tool_ids: string[] } => ({
-  name: '', skill: '', model_name: '', llm_provider_id: '', tool_ids: [],
+  name: '', skill: '', agent_group: '', llm_provider_id: '', tool_ids: [],
 });
 
 export default function AgentsPage() {
-  const [agents, setAgents]         = useState<AgentRow[]>([]);
-  const [tools, setTools]           = useState<ToolRow[]>([]);
-  const [providers, setProviders]   = useState<LlmSettingRow[]>([]);
-  const [selected, setSelected]     = useState<AgentRow | null>(null);
-  const [form, setForm]             = useState(blank());
-  const [isNew, setIsNew]           = useState(false);
-  const [search, setSearch]         = useState('');
+  const [agents, setAgents]       = useState<AgentRow[]>([]);
+  const [tools, setTools]         = useState<ToolRow[]>([]);
+  const [providers, setProviders] = useState<LlmSettingRow[]>([]);
+  const [selected, setSelected]   = useState<AgentRow | null>(null);
+  const [form, setForm]           = useState(blank());
+  const [isNew, setIsNew]         = useState(false);
+  const [search, setSearch]       = useState('');
+  const [saving, setSaving]       = useState(false);
+  const fileInputRef              = useRef<HTMLInputElement>(null);
 
   // Dry run state
-  const [prompt, setPrompt]         = useState('');
-  const [running, setRunning]       = useState(false);
-  const [runResult, setRunResult]   = useState<null | {
+  const [prompt, setPrompt]       = useState('');
+  const [running, setRunning]     = useState(false);
+  const [runResult, setRunResult] = useState<null | {
     text: string; tokens?: { inputTokens: number; outputTokens: number };
     tools?: string[]; latency?: number; error?: string;
   }>(null);
 
-  const [saving, setSaving]         = useState(false);
-
-  // Load
+  // Load everything
   const load = useCallback(async () => {
     const [a, t, p] = await Promise.all([agentsApi.list(), toolsApi.list(), llmApi.list()]);
     setAgents(a);
@@ -38,18 +38,28 @@ export default function AgentsPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  const defaultProvider = providers.find(p => p.is_default);
+
   const filtered = agents.filter(a =>
-    a.name.toLowerCase().includes(search.toLowerCase())
+    a.name.toLowerCase().includes(search.toLowerCase()) ||
+    (a.agent_group ?? '').toLowerCase().includes(search.toLowerCase())
   );
 
-  // Select an agent for editing
+  // Group agents by agent_group for the sidebar
+  const grouped = filtered.reduce<Record<string, AgentRow[]>>((acc, a) => {
+    const g = a.agent_group?.trim() || 'Ungrouped';
+    if (!acc[g]) acc[g] = [];
+    acc[g].push(a);
+    return acc;
+  }, {});
+
   const select = async (agent: AgentRow) => {
     const full = await agentsApi.get(agent.id);
     setSelected(full);
     setForm({
       name: full.name,
       skill: full.skill,
-      model_name: full.model_name,
+      agent_group: full.agent_group ?? '',
       llm_provider_id: full.llm_provider_id ?? '',
       tool_ids: (full.tools ?? []).map(t => t.id),
     });
@@ -64,14 +74,13 @@ export default function AgentsPage() {
     setRunResult(null);
   };
 
-  // Save
   const save = async () => {
     setSaving(true);
     try {
       const payload = {
         name: form.name ?? '',
         skill: form.skill ?? '',
-        model_name: form.model_name ?? '',
+        agent_group: form.agent_group ?? '',
         llm_provider_id: form.llm_provider_id || undefined,
         tool_ids: form.tool_ids ?? [],
       };
@@ -90,7 +99,6 @@ export default function AgentsPage() {
     }
   };
 
-  // Delete
   const del = async () => {
     if (!selected) return;
     if (!confirm(`Delete agent "${selected.name}"?`)) return;
@@ -100,7 +108,6 @@ export default function AgentsPage() {
     await load();
   };
 
-  // Dry run
   const run = async () => {
     if (!selected || !prompt.trim()) return;
     setRunning(true);
@@ -131,7 +138,29 @@ export default function AgentsPage() {
         : [...(f.tool_ids ?? []), id],
     }));
 
+  // Upload .md file handler
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const text = ev.target?.result as string;
+      setForm(f => ({ ...f, skill: text }));
+    };
+    reader.readAsText(file);
+    // reset so same file can be re-selected
+    e.target.value = '';
+  };
+
   const showForm = isNew || selected !== null;
+
+  // Resolve display label for active provider
+  const activeProvider = providers.find(p => p.id === form.llm_provider_id);
+  const providerLabel = activeProvider
+    ? `${activeProvider.provider} — ${activeProvider.model_name}`
+    : defaultProvider
+      ? `${defaultProvider.provider} — ${defaultProvider.model_name} (default)`
+      : 'System default';
 
   return (
     <div className="two-panel">
@@ -147,7 +176,7 @@ export default function AgentsPage() {
         <div className="search-wrap">
           <input
             className="search-input"
-            placeholder="Search agents…"
+            placeholder="Search agents or groups…"
             value={search}
             onChange={e => setSearch(e.target.value)}
           />
@@ -160,14 +189,34 @@ export default function AgentsPage() {
               <p>No agents yet. <br />Click + to create one.</p>
             </div>
           )}
-          {filtered.map(agent => (
-            <div
-              key={agent.id}
-              className={`list-item${selected?.id === agent.id ? ' selected' : ''}`}
-              onClick={() => select(agent)}
-            >
-              <div className="list-item-name">{agent.name}</div>
-              <div className="list-item-meta">{agent.llm_provider ?? 'groq'} · {agent.model_name || 'default'}</div>
+          {Object.entries(grouped).map(([group, groupAgents]) => (
+            <div key={group}>
+              {/* Group header — only shown when there are multiple groups or a named group */}
+              {(Object.keys(grouped).length > 1 || group !== 'Ungrouped') && (
+                <div style={{
+                  padding: '6px 14px 4px',
+                  fontSize: 10,
+                  fontWeight: 700,
+                  letterSpacing: '0.08em',
+                  textTransform: 'uppercase',
+                  color: 'var(--text-muted)',
+                  userSelect: 'none',
+                }}>
+                  {group}
+                </div>
+              )}
+              {groupAgents.map(agent => (
+                <div
+                  key={agent.id}
+                  className={`list-item${selected?.id === agent.id ? ' selected' : ''}`}
+                  onClick={() => select(agent)}
+                >
+                  <div className="list-item-name">{agent.name}</div>
+                  <div className="list-item-meta">
+                    {agent.llm_provider ?? defaultProvider?.provider ?? 'ollama'} · {agent.provider_model ?? defaultProvider?.model_name ?? 'default'}
+                  </div>
+                </div>
+              ))}
             </div>
           ))}
         </div>
@@ -185,6 +234,7 @@ export default function AgentsPage() {
           </div>
         ) : (
           <>
+            {/* Header */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
               <div>
                 <div className="page-title">{isNew ? 'New Agent' : selected?.name}</div>
@@ -205,12 +255,14 @@ export default function AgentsPage() {
               </div>
             </div>
 
-            {/* Name */}
+            {/* ── Identity card ───────────────────────────────────────────── */}
             <div className="card">
               <div className="card-title"><Bot width={16} height={16} /> Identity</div>
+
               <div className="form-group">
                 <label className="form-label">Agent Name</label>
                 <input
+                  id="agent-name"
                   className="form-input"
                   placeholder="e.g. Research Analyst"
                   value={form.name}
@@ -218,55 +270,88 @@ export default function AgentsPage() {
                 />
               </div>
 
-              {/* LLM Provider */}
               <div className="form-group">
+                <label className="form-label">Group <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(optional — groups agents in the sidebar)</span></label>
+                <input
+                  id="agent-group"
+                  className="form-input"
+                  placeholder="e.g. Finance, Research, Support…"
+                  value={form.agent_group}
+                  onChange={e => setForm(f => ({ ...f, agent_group: e.target.value }))}
+                />
+              </div>
+
+              <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label">LLM Provider</label>
                 <select
+                  id="agent-llm-provider"
                   className="form-select"
                   value={form.llm_provider_id}
                   onChange={e => setForm(f => ({ ...f, llm_provider_id: e.target.value }))}
                 >
-                  <option value="">Use system default</option>
+                  <option value="">
+                    {defaultProvider
+                      ? `Default — ${defaultProvider.provider} / ${defaultProvider.model_name}`
+                      : 'Use system default'}
+                  </option>
                   {providers.map(p => (
                     <option key={p.id} value={p.id}>
-                      {p.provider} — {p.model_name}{p.is_default ? ' (default)' : ''}
+                      {p.provider} — {p.model_name}{p.is_default ? ' ✓ default' : ''}
                     </option>
                   ))}
                 </select>
-              </div>
-
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label">Model Override <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(optional)</span></label>
-                <input
-                  className="form-input"
-                  placeholder="Leave blank to use provider default"
-                  value={form.model_name}
-                  onChange={e => setForm(f => ({ ...f, model_name: e.target.value }))}
-                />
+                <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-muted)' }}>
+                  Active: <strong style={{ color: 'var(--text-secondary)' }}>{providerLabel}</strong>
+                </div>
               </div>
             </div>
 
-            {/* Skill */}
+            {/* ── Skill card ──────────────────────────────────────────────── */}
             <div className="card">
-              <div className="card-title"><ChevronRight width={16} height={16} /> Skill (System Prompt)</div>
-              <div className="form-group">
-                <label className="form-label">Paste or type your agent's skill / system prompt</label>
+              <div className="card-title"><ChevronRight width={16} height={16} /> Skill / System Prompt</div>
+
+              {/* Upload or type toggle */}
+              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                <button
+                  className="btn btn-ghost"
+                  style={{ fontSize: 12, padding: '5px 12px' }}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Upload width={13} height={13} /> Upload .md file
+                </button>
+                {form.skill && (
+                  <button
+                    className="btn btn-ghost"
+                    style={{ fontSize: 12, padding: '5px 10px', color: 'var(--red)' }}
+                    onClick={() => setForm(f => ({ ...f, skill: '' }))}
+                    title="Clear skill"
+                  >
+                    <X width={13} height={13} /> Clear
+                  </button>
+                )}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".md,.txt"
+                  style={{ display: 'none' }}
+                  onChange={handleFileUpload}
+                />
+              </div>
+
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Skill description</label>
                 <textarea
+                  id="agent-skill"
                   className="form-textarea"
-                  rows={8}
-                  placeholder="You are a helpful AI assistant that specializes in…"
+                  rows={10}
+                  placeholder={"You are a helpful AI assistant that specializes in…\n\nDescribe the agent's role, capabilities, tone, and any constraints."}
                   value={form.skill}
                   onChange={e => setForm(f => ({ ...f, skill: e.target.value }))}
                 />
               </div>
-              {form.skill && (
-                <div className="md-preview" style={{ marginTop: 8, fontSize: 12 }}>
-                  Preview: {form.skill.slice(0, 200)}{form.skill.length > 200 ? '…' : ''}
-                </div>
-              )}
             </div>
 
-            {/* Tools */}
+            {/* ── Tools card ──────────────────────────────────────────────── */}
             <div className="card">
               <div className="card-title"><Zap width={16} height={16} /> Available Tools</div>
               {tools.length === 0 ? (
@@ -286,13 +371,14 @@ export default function AgentsPage() {
               )}
             </div>
 
-            {/* Dry Run — only when agent is saved */}
+            {/* ── Dry Run — only when agent is saved ──────────────────────── */}
             {!isNew && selected && (
               <div className="card">
                 <div className="card-title"><Play width={16} height={16} /> Dry Run</div>
                 <div className="form-group">
                   <label className="form-label">Sample Prompt</label>
                   <textarea
+                    id="agent-dry-run-prompt"
                     className="form-textarea"
                     rows={3}
                     placeholder="Type a test prompt for this agent…"
@@ -311,8 +397,10 @@ export default function AgentsPage() {
 
                 {runResult && (
                   <div style={{ marginTop: 20 }}>
-                    <div className={`output-panel${runResult.error ? ' ' : ''}`}
-                      style={{ borderColor: runResult.error ? 'rgba(239,68,68,0.4)' : undefined }}>
+                    <div
+                      className="output-panel"
+                      style={{ borderColor: runResult.error ? 'rgba(239,68,68,0.4)' : undefined }}
+                    >
                       {runResult.text}
                     </div>
                     <div className="output-meta">
