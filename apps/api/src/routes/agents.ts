@@ -128,14 +128,14 @@ router.post('/:id/run', handle(async (req, res) => {
   const agentId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
 
   const context: ExecutionContext = {
-    inputData: { prompt: parsed.data.prompt },
+    inputData: { prompt: parsed.data.prompt, agentId },
     currentDepth: 0,
     totalSteps: 1,
     maxDepth: 5,
     parentRunId: null,
   };
 
-  const agentNode = new AgentNode(agentId);
+  const agentNode = new AgentNode();
   const result = await agentNode.execute(context);
   res.json({ data: result });
 }));

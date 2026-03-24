@@ -1,188 +1,176 @@
 /**
- * AgentNode — Level 1 of the execution hierarchy
+ * AgentNode — Agentic Loop Engine
  * ─────────────────────────────────────────────────────────────────────────────
- * Implements IExecutableNode. Fetches its config from the DB at runtime,
- * builds the message chain, delegates to the LLM factory, and writes
- * the execution_runs row (idempotent resume check included).
+ * Executes an agent by:
+ * 1. Loading the agent definition + tools from the database
+ * 2. Resolving the LLM provider via LLMProviderFactory (Ollama / OpenAI / Anthropic)
+ * 3. Running a tool-use agentic loop until the model signals end_turn
  *
- * Agentic loop:
- *   1. Build system prompt from agent.skill
- *   2. Start conversation with inputData as user message
- *   3. If LLM returns tool_use → execute tool → append result → loop
- *   4. When stop_reason = end_turn → parse output → mark run completed
+ * The Claude Agent SDK is NOT used here — it spawns a child process that
+ * requires a real Anthropic account. Instead we drive the loop ourselves
+ * using the ChatProvider interface, which works with any OAI-compatible backend.
  */
 
-import { v4 as uuidv4 } from 'uuid';
-import type { IExecutableNode, ExecutionContext, ExecutionResult, ToolDefinition } from '../types.js';
-import pool from '../db/client.js';
-import { LLMProviderFactory, type ChatMessage } from './LLMProviderFactory.js';
+import db from '../db/client.js';
 import { ToolRegistry } from './ToolRegistry.js';
+import { LLMProviderFactory, type ChatMessage } from './LLMProviderFactory.js';
+import { ExecutionContext, ExecutionResult, IExecutableNode, ToolDefinition } from '../types.js';
 
-const MAX_AGENT_LOOPS = 10;
+const MAX_TURNS = 15;
 
 export class AgentNode implements IExecutableNode {
-  constructor(private readonly agentId: string) {}
-
-  async execute(context: ExecutionContext): Promise<ExecutionResult> {
-    const startedAt = Date.now();
-
-    // ── Circuit breaker ──────────────────────────────────────────────────────
-    if (context.currentDepth >= context.maxDepth) {
-      return {
-        success: false,
-        output: {},
-        error: `Max depth (${context.maxDepth}) exceeded at AgentNode ${this.agentId}`,
-      };
-    }
-
-    // ── Idempotent resume: skip if already completed ─────────────────────────
-    if (context.parentRunId) {
-      const { rows } = await pool.query<{ id: string; status: string; output_data: Record<string, unknown> }>(
-        `SELECT id, status, output_data FROM execution_runs
-         WHERE node_type = 'agent' AND node_id = $1
-           AND parent_run_id = $2 AND status = 'completed'
-         LIMIT 1`,
-        [this.agentId, context.parentRunId]
-      );
-      if (rows.length > 0) {
-        return { success: true, output: rows[0].output_data ?? {} };
-      }
-    }
-
-    // ── Create execution_runs row ────────────────────────────────────────────
-    const runId = uuidv4();
-    await pool.query(
-      `INSERT INTO execution_runs (id, node_type, node_id, parent_run_id, status, input_data, started_at)
-       VALUES ($1, 'agent', $2, $3, 'running', $4, NOW())`,
-      [runId, this.agentId, context.parentRunId, JSON.stringify(context.inputData)]
-    );
+  async execute(ctx: ExecutionContext): Promise<ExecutionResult> {
+    const { agentId, runId, prompt } = ctx.inputData;
 
     try {
-      // ── Fetch agent definition from DB ────────────────────────────────────
-      const agentRes = await pool.query<{
-        name: string; skill: string; model_name: string;
-        llm_provider: string; api_key: string; base_url: string | null;
-      }>(
-        `SELECT a.name, a.skill, a.model_name,
-                l.provider AS llm_provider, l.api_key, l.base_url
-         FROM agents a
-         LEFT JOIN llm_settings l ON a.llm_provider_id = l.id
-         WHERE a.id = $1`,
-        [this.agentId]
-      );
-
-      if (agentRes.rows.length === 0) {
-        throw new Error(`Agent ${this.agentId} not found`);
-      }
-
+      // ── 1. Fetch Agent ────────────────────────────────────────────────────
+      const agentRes = await db.query(`SELECT * FROM agents WHERE id = $1`, [agentId]);
+      if (agentRes.rows.length === 0) throw new Error(`Agent not found: ${agentId}`);
       const agent = agentRes.rows[0];
 
-      // ── Fetch permitted tools ─────────────────────────────────────────────
-      const toolsRes = await pool.query<{ name: string; description: string; schema: Record<string, unknown>; config: Record<string, unknown> }>(
-        `SELECT t.name, t.description, t.schema, t.config
-         FROM tools t
-         INNER JOIN agent_tools at2 ON t.id = at2.tool_id
-         WHERE at2.agent_id = $1 AND t.is_enabled = true`,
-        [this.agentId]
+      // ── 2. Fetch Tools ────────────────────────────────────────────────────
+      const toolsRes = await db.query(
+        `SELECT t.* FROM tools t
+         JOIN agent_tools at ON t.id = at.tool_id
+         WHERE at.agent_id = $1 AND t.is_enabled = true`,
+        [agentId]
       );
-
-      const toolDefinitions: ToolDefinition[] = toolsRes.rows.map((r) => ({
-        name: r.name,
-        description: r.description,
-        inputSchema: r.schema,
+      const toolDefs: ToolDefinition[] = toolsRes.rows.map((t: any) => ({
+        name: t.name,
+        description: t.description ?? '',
+        inputSchema: typeof t.schema === 'string' ? JSON.parse(t.schema) : (t.schema ?? {}),
       }));
 
-      // ── Build LLM provider via factory ────────────────────────────────────
-      const llmProvider =
-        agent.llm_provider
-          ? LLMProviderFactory.create({
-              provider: agent.llm_provider as 'groq' | 'anthropic' | 'openai',
-              apiKey: agent.api_key,
-              model: agent.model_name || undefined,
-              baseUrl: agent.base_url ?? undefined,
-            })
-          : LLMProviderFactory.create(); // fall back to env defaults
+      // ── 3. Resolve LLM Provider via Factory ───────────────────────────────
+      // Check if agent has a pinned llm_settings row, otherwise fall back to default
+      let providerOverride: Parameters<typeof LLMProviderFactory.create>[0] = {};
 
-      // ── Agentic conversation loop ─────────────────────────────────────────
+      if (agent.llm_provider_id) {
+        const settingsRes = await db.query(
+          `SELECT * FROM llm_settings WHERE id = $1`,
+          [agent.llm_provider_id]
+        );
+        if (settingsRes.rows.length > 0) {
+          const s = settingsRes.rows[0];
+          providerOverride = {
+            provider: s.provider,
+            apiKey: s.api_key,
+            model: agent.model_name || s.model_name,
+            baseUrl: s.base_url ?? undefined,
+          };
+        }
+      } else {
+        // Use the default provider from llm_settings
+        const defaultRes = await db.query(
+          `SELECT * FROM llm_settings WHERE is_default = true LIMIT 1`
+        );
+        if (defaultRes.rows.length > 0) {
+          const s = defaultRes.rows[0];
+          providerOverride = {
+            provider: s.provider,
+            apiKey: s.api_key,
+            model: agent.model_name || s.model_name,
+            baseUrl: s.base_url ?? undefined,
+          };
+        }
+      }
+
+      const llm = LLMProviderFactory.create(providerOverride);
+
+      // ── 4. Mark run as running ────────────────────────────────────────────
+      if (runId) {
+        await db.query(`UPDATE execution_runs SET status = 'running' WHERE id = $1`, [runId]);
+      }
+
+      // ── 5. Agentic Loop ───────────────────────────────────────────────────
       const messages: ChatMessage[] = [
-        { role: 'system', content: agent.skill || 'You are a helpful AI assistant.' },
-        { role: 'user',   content: JSON.stringify(context.inputData) },
+        { role: 'system', content: agent.skill ?? 'You are a helpful AI assistant.' },
+        { role: 'user',   content: prompt as string },
       ];
 
-      let loopCount = 0;
+      let outputText = '';
       const usedTools: string[] = [];
-      let totalInputTokens = 0;
-      let totalOutputTokens = 0;
-      let finalContent = '';
+      let tokenUsage = { inputTokens: 0, outputTokens: 0 };
+      let turn = 0;
 
-      while (loopCount < MAX_AGENT_LOOPS) {
-        loopCount++;
+      while (turn < MAX_TURNS) {
+        turn++;
+        console.log(`[AgentNode] Turn ${turn} — calling LLM (${providerOverride.provider ?? 'default'})`);
 
-        const response = await llmProvider.chat(messages, toolDefinitions);
-        totalInputTokens += response.inputTokens;
-        totalOutputTokens += response.outputTokens;
+        const response = await llm.chat(messages, toolDefs, { maxTokens: 4096 });
 
-        if (response.stopReason === 'end_turn' || response.stopReason === 'stop') {
-          finalContent = response.content;
+        tokenUsage.inputTokens  += response.inputTokens;
+        tokenUsage.outputTokens += response.outputTokens;
+
+        // Collect assistant text
+        if (response.content) {
+          outputText += response.content + '\n';
+        }
+
+        // No tool calls → done
+        if (response.stopReason === 'end_turn' || response.toolCalls.length === 0) {
           break;
         }
 
-        if (response.stopReason === 'tool_use' && response.toolCalls.length > 0) {
-          // Append assistant message
-          messages.push({ role: 'assistant', content: response.content || '' });
+        // ── Tool execution round ─────────────────────────────────────────
+        // Append assistant turn with tool calls
+        messages.push({
+          role: 'assistant',
+          content: response.content,
+        } as ChatMessage);
 
-          // Execute each tool call
-          for (const tc of response.toolCalls) {
-            usedTools.push(tc.name);
-            const toolResult = await ToolRegistry.execute(tc.name, tc.arguments, toolsRes.rows.find(r => r.name === tc.name)?.config ?? {});
-            messages.push({
-              role: 'user',
-              content: `Tool result for ${tc.name}:\n${JSON.stringify(toolResult)}`,
-            });
+        // Execute each tool and append results as user messages
+        for (const tc of response.toolCalls) {
+          usedTools.push(tc.name);
+          console.log(`[AgentNode] Executing tool: ${tc.name}`, tc.arguments);
+          let toolResult: Record<string, unknown>;
+          try {
+            toolResult = await ToolRegistry.execute(tc.name, tc.arguments, {});
+          } catch (toolErr: any) {
+            toolResult = { error: toolErr.message };
           }
-          continue;
+          // Feed result back as a user message (simple text representation)
+          messages.push({
+            role: 'user',
+            content: `Tool "${tc.name}" result:\n${JSON.stringify(toolResult, null, 2)}`,
+          });
         }
-
-        // Unexpected stop — treat content as final answer
-        finalContent = response.content;
-        break;
       }
 
-      const latencyMs = Date.now() - startedAt;
-
-      // ── Parse output ─────────────────────────────────────────────────────
-      let parsedOutput: Record<string, unknown>;
-      try {
-        parsedOutput = JSON.parse(finalContent) as Record<string, unknown>;
-      } catch {
-        parsedOutput = { text: finalContent };
-      }
-
-      const result: ExecutionResult = {
+      // ── 6. Persist result ─────────────────────────────────────────────────
+      const finalResult: ExecutionResult = {
         success: true,
-        output: parsedOutput,
-        tokenUsage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
+        output: { text: outputText.trim() || '(No text response)' },
+        tokenUsage,
         toolsUsed: usedTools,
-        latencyMs,
       };
 
-      await pool.query(
-        `UPDATE execution_runs
-         SET status = 'completed', output_data = $1, ended_at = NOW()
-         WHERE id = $2`,
-        [JSON.stringify(result.output), runId]
-      );
+      if (runId) {
+        await db.query(
+          `UPDATE execution_runs
+           SET status = 'completed', ended_at = NOW(), output = $1, error_message = NULL
+           WHERE id = $2`,
+          [JSON.stringify(finalResult), runId]
+        );
+      }
 
-      return result;
-    } catch (error) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      await pool.query(
-        `UPDATE execution_runs
-         SET status = 'failed', error_message = $1, ended_at = NOW()
-         WHERE id = $2`,
-        [errMsg, runId]
-      );
-      return { success: false, output: {}, error: errMsg };
+      return finalResult;
+
+    } catch (err: any) {
+      console.error('[AgentNode] Error:', err);
+      if (runId) {
+        await db.query(
+          `UPDATE execution_runs
+           SET status = 'failed', ended_at = NOW(), error_message = $1
+           WHERE id = $2`,
+          [err.message, runId]
+        );
+      }
+      return {
+        success: false,
+        output: { text: '' },
+        error: err.message,
+      };
     }
   }
 }

@@ -8,6 +8,7 @@ import { config } from './config.js';
 import agentsRouter     from './routes/agents.js';
 import toolsRouter      from './routes/tools.js';
 import llmSettingsRouter from './routes/llm-settings.js';
+// removed proxy
 
 const app = express();
 
@@ -26,6 +27,7 @@ app.get('/health', (_req, res) => res.json({ status: 'ok', ts: new Date().toISOS
 app.use('/api/agents',       agentsRouter);
 app.use('/api/tools',        toolsRouter);
 app.use('/api/llm-settings', llmSettingsRouter);
+// removed proxy usage
 
 // ─── 404 ──────────────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ error: 'Not found' }));

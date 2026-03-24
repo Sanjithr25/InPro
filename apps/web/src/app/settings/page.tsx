@@ -5,7 +5,7 @@ import { Settings2, Key, Eye, EyeOff, Save, CheckCircle2, Circle, Plus } from 'l
 import { llmApi, type LlmSettingRow } from '@/lib/api';
 
 const PROVIDER_LABELS: Record<string, { label: string; icon: string; defaultModel: string; defaultBase?: string }> = {
-  groq:      { label: 'Groq',       icon: '⚡', defaultModel: 'llama-3.3-70b-versatile', defaultBase: 'https://api.groq.com/openai/v1' },
+
   anthropic: { label: 'Anthropic',  icon: '🟠', defaultModel: 'claude-opus-4-5',         defaultBase: undefined },
   openai:    { label: 'OpenAI',     icon: '🟢', defaultModel: 'gpt-4o',                  defaultBase: undefined },
   gemini:    { label: 'Gemini',     icon: '🔵', defaultModel: 'gemini-2.0-flash',        defaultBase: undefined },

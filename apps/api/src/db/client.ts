@@ -1,4 +1,13 @@
-import 'dotenv/config';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import dotenv from 'dotenv';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Load .env from apps/api OR the monorepo root
+dotenv.config();
+dotenv.config({ path: join(__dirname, '../../../../.env') });
 import pg from 'pg';
 
 const { Pool } = pg;

@@ -23,7 +23,7 @@ export interface IExecutableNode {
 
 // ─── LLM Provider Types ──────────────────────────────────────────────────────
 
-export type LLMProviderName = 'groq' | 'anthropic' | 'openai' | 'gemini' | 'ollama';
+export type LLMProviderName = 'anthropic' | 'openai' | 'gemini' | 'ollama';
 
 export interface ToolDefinition {
   name: string;

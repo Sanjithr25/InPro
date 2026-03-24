@@ -55,7 +55,7 @@ router.put('/:id', handle(async (req, res) => {
 
 // POST /api/llm-settings (add new provider)
 const CreateSettingSchema = z.object({
-  provider:     z.enum(['groq','anthropic','openai','gemini','ollama']),
+  provider:     z.enum(['anthropic','openai','gemini','ollama']),
   api_key:      z.string().default(''),
   base_url:     z.string().url().nullish(),
   model_name:   z.string().min(1),

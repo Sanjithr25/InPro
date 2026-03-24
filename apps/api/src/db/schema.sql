@@ -9,7 +9,7 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- ─── LLM Provider Settings ────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS llm_settings (
   id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  provider     TEXT NOT NULL CHECK (provider IN ('groq','anthropic','openai','gemini','ollama')),
+  provider     TEXT NOT NULL CHECK (provider IN ('anthropic','openai','gemini','ollama')),
   api_key      TEXT NOT NULL DEFAULT '',
   base_url     TEXT,
   model_name   TEXT NOT NULL,
@@ -117,7 +117,7 @@ CREATE INDEX IF NOT EXISTS idx_exec_runs_pending
 CREATE INDEX IF NOT EXISTS idx_exec_runs_node
   ON execution_runs(node_type, node_id);
 
--- ─── Seed: Default LLM provider (Grok) ───────────────────────────────────────
+-- ─── Seed: Default LLM provider (Ollama) ───────────────────────────────────────
 INSERT INTO llm_settings (provider, model_name, is_default, base_url)
-VALUES ('groq', 'llama-3.3-70b-versatile', true, 'https://api.groq.com/openai/v1')
+VALUES ('ollama', 'llama3.2', true, 'http://localhost:11434/v1')
 ON CONFLICT DO NOTHING;

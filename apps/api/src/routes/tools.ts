@@ -21,7 +21,7 @@ router.get('/:id', handle(async (req, res) => {
     `SELECT id, name, description, schema, is_enabled, created_at FROM tools WHERE id = $1`,
     [req.params.id]
   );
-  if (rows.length === 0) return res.status(404).json({ error: 'Tool not found' });
+  if (rows.length === 0) { res.status(404).json({ error: 'Tool not found' }); return; }
   res.json({ data: rows[0] });
 }));
 
@@ -36,7 +36,7 @@ const ToolSchema = z.object({
 // POST /api/tools
 router.post('/', handle(async (req, res) => {
   const parsed = ToolSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.flatten() }); return; }
   const { name, description, schema, config, is_enabled } = parsed.data;
   const id = uuidv4();
   await pool.query(
@@ -49,7 +49,7 @@ router.post('/', handle(async (req, res) => {
 // PUT /api/tools/:id
 router.put('/:id', handle(async (req, res) => {
   const parsed = ToolSchema.partial().safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.flatten() }); return; }
   const sets: string[] = [];
   const vals: unknown[] = [];
   let i = 1;
@@ -59,7 +59,7 @@ router.put('/:id', handle(async (req, res) => {
       vals.push(typeof v === 'object' ? JSON.stringify(v) : v);
     }
   }
-  if (sets.length === 0) return res.json({ data: { updated: false } });
+  if (sets.length === 0) { res.json({ data: { updated: false } }); return; }
   vals.push(req.params.id);
   await pool.query(`UPDATE tools SET ${sets.join(', ')} WHERE id = $${i}`, vals);
   res.json({ data: { updated: true } });

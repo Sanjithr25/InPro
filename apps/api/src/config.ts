@@ -1,4 +1,12 @@
-import 'dotenv/config';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import dotenv from 'dotenv';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Load .env from monorepo root
+dotenv.config({ path: join(__dirname, '../../../.env') });
 
 function requireEnv(key: string): string {
   const value = process.env[key];
@@ -15,9 +23,8 @@ export const config = {
   },
 
   llm: {
-    provider: (process.env.LLM_PROVIDER ?? 'groq') as 'groq' | 'anthropic' | 'openai' | 'gemini',
-    model: process.env.LLM_MODEL ?? 'llama-3.3-70b-versatile',
-    groqApiKey: process.env.GROQ_API_KEY ?? '',
+    provider: (process.env.LLM_PROVIDER ?? 'ollama') as 'ollama' | 'anthropic' | 'openai' | 'gemini',
+    model: process.env.LLM_MODEL ?? 'llama3.2',
     anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
     openaiApiKey: process.env.OPENAI_API_KEY ?? '',
   },
