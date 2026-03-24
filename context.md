@@ -88,8 +88,70 @@ When writing or reviewing code for this project, adhere to these checks:
 
 ## 5. Implementation Roadmap Phases
 When starting a new feature, verify what phase of the roadmap you are on:
-1.  **Phase 1: Walking Skeleton** - Minimal UI, execute one single Agent synchronously.
+1.  **Phase 1: Walking Skeleton** ✅ COMPLETE — Monorepo scaffold, DB schema (Supabase), `LLMProviderFactory` (Groq via OpenAI-compatible SDK), `AgentNode` (factory + idempotent resume), Express API routes, Next.js 15 frontend (Page 1 + Page 6). **Pending**: fill `.env` with real creds then run `npm run db:migrate`.
 2.  **Phase 2: Tool Layer** - Build ToolRegistry, parse dynamic JSON tool schemas over to the LLM.
 3.  **Phase 3: Orchestration** - Implement the linear `TaskNode`. End-to-end dry run of a Task.
 4.  **Phase 4: Async Dispatch** - Introduce Redis. Rip out synchronous execution. Frontend listens for status updates instead of blocking HTTP requests.
 5.  **Phase 5: Observability** - Map the polymorphic `execution_runs` logging back to Page 5 Run History UI.
+
+---
+
+## 6. Monorepo Structure (Phase 1)
+```
+InPro/
+├── apps/
+│   ├── api/                      # Node.js/Express backend
+│   │   └── src/
+│   │       ├── config.ts         # Typed env config
+│   │       ├── index.ts          # Express entry point
+│   │       ├── db/
+│   │       │   ├── client.ts     # pg Pool (Supabase SSL)
+│   │       │   ├── migrate.ts    # Migration runner
+│   │       │   └── schema.sql    # Full PostgreSQL schema
+│   │       ├── engine/
+│   │       │   ├── LLMProviderFactory.ts  # Factory: groq|anthropic|openai
+│   │       │   ├── AgentNode.ts           # IExecutableNode Level 1
+│   │       │   └── ToolRegistry.ts        # Phase 1 stub
+│   │       └── routes/
+│   │           ├── agents.ts      # CRUD + /run dry run
+│   │           ├── tools.ts       # CRUD
+│   │           └── llm-settings.ts # CRUD + default mgmt
+│   └── web/                      # Next.js 15 frontend
+│       └── src/
+│           ├── app/
+│           │   ├── layout.tsx    # Root layout + sidebar
+│           │   ├── page.tsx      # Redirect → /agents
+│           │   ├── agents/page.tsx  # Page 1: Agent Management
+│           │   ├── settings/page.tsx # Page 6: LLM Settings
+│           │   └── [tools|tasks|scheduler|history]/page.tsx  # Stubs
+│           ├── components/Sidebar.tsx
+│           └── lib/api.ts        # Typed fetch wrappers
+└── packages/shared/src/          # Shared TS types
+    └── types.ts                  # IExecutableNode, ExecutionContext, DB rows
+```
+
+## 7. Developer Setup
+```bash
+# Pre-requisite: fill .env with real credentials first!
+# Required: DATABASE_URL (Supabase transaction pooler URL)
+# Required: GROQ_API_KEY  (get free key at console.groq.com)
+
+# 1. Copy env and fill credentials
+cp .env.example .env
+# Edit .env: set DATABASE_URL and GROQ_API_KEY
+
+# 2. Run DB migration (idempotent — safe to re-run)
+npm run db:migrate
+
+# 3. Start API on port 3001
+npm run dev:api
+
+# 4. Start frontend on port 3000
+npm run dev:web
+```
+
+## 8. Known Issues / Notes
+- `tools.ts` routes use `return res.xxx()` pattern from original scaffold — re-run type check after Phase 2 if errors appear.
+- `ToolRegistry` is a stub in Phase 1; all tool calls return a placeholder response.
+- `AnthropicProvider` in `LLMProviderFactory.ts` is a placeholder stub for Phase 2.
+- DB migration is idempotent (`CREATE TABLE IF NOT EXISTS`, `ON CONFLICT DO NOTHING`).
