@@ -90,7 +90,8 @@ export class AgentNode implements IExecutableNode {
 
       let outputText = '';
       const usedTools: string[] = [];
-      let tokenUsage = { inputTokens: 0, outputTokens: 0 };
+      const executionHistory: Set<string> = new Set();
+      const tokenUsage = { inputTokens: 0, outputTokens: 0 };
       let turn = 0;
 
       while (turn < MAX_TURNS) {
@@ -99,9 +100,10 @@ export class AgentNode implements IExecutableNode {
 
         const response = await llm.chat(messages, toolDefs, { maxTokens: 4096 });
 
-        tokenUsage.inputTokens  += response.inputTokens;
-        tokenUsage.outputTokens += response.outputTokens;
-
+        if (response.inputTokens) {
+          tokenUsage.inputTokens += response.inputTokens;
+          tokenUsage.outputTokens += response.outputTokens;
+        }
         // Collect assistant text
         if (response.content) {
           outputText += response.content + '\n';
@@ -124,16 +126,35 @@ export class AgentNode implements IExecutableNode {
           usedTools.push(tc.name);
           console.log(`[AgentNode] Executing tool: ${tc.name}`, tc.arguments);
           let toolResult: Record<string, unknown>;
-          try {
-            toolResult = await ToolRegistry.execute(tc.name, tc.arguments, agentId as string | undefined);
-          } catch (toolErr: any) {
-            toolResult = { error: toolErr.message };
+          
+          const callFingerprint = `${tc.name}:${JSON.stringify(tc.arguments)}`;
+          
+          if (executionHistory.has(callFingerprint)) {
+            // 🚨 Loop detected
+            console.log(`[AgentNode] ⚠️ Caught loop for tool: ${tc.name}`);
+            toolResult = {
+                error: 'terminal',
+                message: `[SYSTEM ALERT] You already executed this exact tool with identical arguments. Repeating the same action causes an infinite loop. You MUST change your approach, use different arguments, or end your turn.`
+            };
+          } else {
+            executionHistory.add(callFingerprint);
+            try {
+              toolResult = await ToolRegistry.execute(tc.name, tc.arguments, agentId as string | undefined);
+            } catch (toolErr: any) {
+              toolResult = { error: toolErr.message };
+            }
           }
+
           // Feed result back as a user message (simple text representation)
           messages.push({
             role: 'user',
             content: `Tool "${tc.name}" result:\n${JSON.stringify(toolResult, null, 2)}`,
           });
+        }
+        
+        // Brief delay against rate limits
+        if (turn < MAX_TURNS - 1) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
         }
       }
 

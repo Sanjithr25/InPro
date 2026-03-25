@@ -143,6 +143,7 @@ Rules:
 
     const MAX_TURNS = 15;
     const allToolsUsed: string[] = [];
+    const executionHistory: Set<string> = new Set();
     const totalTokens = { inputTokens: 0, outputTokens: 0 };
     let finalOutput = '';
 
@@ -183,9 +184,18 @@ Rules:
                 const toolDef = toolMap.get(tc.name) as any;
                 let toolOutput: any;
 
+                const callFingerprint = `${tc.name}:${JSON.stringify(tc.arguments)}`;
+                
                 if (!toolDef || !toolDef._agentId) {
                     toolOutput = { error: `Agent tool ${tc.name} not found or invalid.` };
+                } else if (executionHistory.has(callFingerprint)) {
+                    // 🚨 Loop detected
+                    console.log(`[TaskNode] ⚠️ Caught loop for ${tc.name}`);
+                    toolOutput = { 
+                        error: `[SYSTEM ALERT] You already called ${tc.name} with these exact arguments and received a response. Repeating the same action causes an infinite loop. You MUST adjust your instructions, select a different agent, or finalize the task.` 
+                    };
                 } else {
+                    executionHistory.add(callFingerprint);
                     // Create child agent run
                     const instructions = tc.arguments.instructions as string;
                     
@@ -231,6 +241,11 @@ Rules:
             }
 
             messages.push(...toolResultsMsgs);
+            
+            // Brief 1s delay to prevent hammering external APIs too aggressively
+            if (turn < MAX_TURNS - 1) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
         }
 
         // ── 6. Update task run record ─────────────────────────────────────────────
