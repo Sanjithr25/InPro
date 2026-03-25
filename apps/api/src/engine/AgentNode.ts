@@ -175,7 +175,7 @@ export class AgentNode implements IExecutableNode {
       if (runId) {
         await db.query(
           `UPDATE execution_runs
-           SET status = 'completed', ended_at = NOW(), output = $1, error_message = NULL
+           SET status = 'completed', ended_at = NOW(), output_data = $1, error_message = NULL
            WHERE id = $2`,
           [JSON.stringify(finalResult), runId]
         );
