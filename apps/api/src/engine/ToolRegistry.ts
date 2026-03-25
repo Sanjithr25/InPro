@@ -17,10 +17,12 @@
 
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, unlink, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import db from '../db/client.js';
 import { tavily } from '@tavily/core';
+import { config as appConfig } from '../config.js';
+import { glob } from 'glob';
 
 const execAsync = promisify(exec);
 
@@ -46,7 +48,7 @@ const execWebSearch: Executor = async (args, config) => {
   const numResults = Math.min(Math.max((args.num_results as number) ?? 5, 1), 10);
   
   // Extract API key from tool DB config or environment
-  const apiKey = (config.tavily_api_key as string) || process.env.TAVILY_API_KEY;
+  const apiKey = (config.tavily_api_key as string) || appConfig.tools.tavilyApiKey;
 
   if (!apiKey) {
     return {
@@ -195,6 +197,81 @@ const execWriteFile: Executor = async (args, config) => {
   }
 };
 
+const execDeleteFile: Executor = async (args, config) => {
+  const filePath = args.path as string;
+  const allowedDirs = (config.allowed_dirs as string[]) ?? [];
+  if (allowedDirs.length > 0) {
+    const abs = filePath.startsWith('/') ? filePath : join(process.cwd(), filePath);
+    if (!allowedDirs.some(d => abs.startsWith(d))) {
+      return { error: 'terminal', message: `Access denied.`, path: filePath };
+    }
+  }
+  try {
+    await unlink(filePath);
+    return { path: filePath, deleted: true };
+  } catch (e: any) {
+    return { error: 'recoverable', message: `Delete failed: ${e.message}`, path: filePath };
+  }
+};
+
+const execListDirectory: Executor = async (args, config) => {
+  const dirPath = args.path as string;
+  const allowedDirs = (config.allowed_dirs as string[]) ?? [];
+  if (allowedDirs.length > 0) {
+    const abs = dirPath.startsWith('/') ? dirPath : join(process.cwd(), dirPath);
+    if (!allowedDirs.some(d => abs.startsWith(d))) {
+      return { error: 'terminal', message: `Access denied.`, path: dirPath };
+    }
+  }
+  try {
+    const entries = await readdir(dirPath, { withFileTypes: true });
+    return {
+      path: dirPath,
+      entries: entries.map(e => ({ name: e.name, type: e.isDirectory() ? 'directory' : e.isFile() ? 'file' : 'other' })),
+    };
+  } catch (e: any) {
+    return { error: 'recoverable', message: `List failed: ${e.message}`, path: dirPath };
+  }
+};
+
+const execFindFiles: Executor = async (args, config) => {
+  const pattern = args.pattern as string;
+  const cwd = (args.cwd as string) || process.cwd();
+  try {
+    const matches = await glob(pattern, { cwd, absolute: true, nodir: true });
+    return { cwd, pattern, matches: matches.slice(0, 100), count: matches.length };
+  } catch (e: any) {
+    return { error: 'recoverable', message: `Find failed: ${e.message}` };
+  }
+};
+
+const execSearchFiles: Executor = async (args, config) => {
+  const regexQuery = args.query as string;
+  const pattern = (args.file_pattern as string) || '**/*.*';
+  const cwd = (args.cwd as string) || process.cwd();
+  try {
+    const files = await glob(pattern, { cwd, absolute: true, nodir: true, ignore: 'node_modules/**' });
+    const regex = new RegExp(regexQuery, 'gi');
+    const results = [];
+    for (const file of files.slice(0, 200)) {
+      try {
+        const text = await readFile(file, 'utf-8');
+        const lines = text.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          if (regex.test(lines[i])) {
+            results.push({ file, line: i + 1, content: lines[i].trim() });
+            if (results.length >= 100) break;
+          }
+        }
+      } catch { /* ignore read errors for binary/protected files */ }
+      if (results.length >= 100) break;
+    }
+    return { query: regexQuery, results, count: results.length };
+  } catch (e: any) {
+    return { error: 'recoverable', message: `Search failed: ${e.message}` };
+  }
+};
+
 const execRunCommand: Executor = async (args, config) => {
   const command     = args.command as string;
   const cwd         = (args.cwd as string) || process.cwd();
@@ -307,20 +384,72 @@ const BUILT_IN_TOOLS: ToolDefinitionEntry[] = [
   },
   {
     name: 'write_file',
-    description:
-      'Use to create or overwrite a file with new content. Returns bytes written. ' +
-      'This is idempotent — writing the same content twice has no side effect. ' +
-      'Always write the full intended content — this does NOT append.',
+    description: 'Use to create or overwrite a file with new content. Returns bytes written.',
     schema: {
       type: 'object',
       properties: {
-        path:    { type: 'string', description: 'File path to write. Created if it does not exist.' },
+        path:    { type: 'string', description: 'File path to write.' },
         content: { type: 'string', description: 'Full text content to write.' },
       },
       required: ['path', 'content'],
     },
     defaultConfig: { allowed_dirs: [] },
     executor: execWriteFile,
+  },
+  {
+    name: 'delete_file',
+    description: 'Use to permanently delete a file from the file system.',
+    schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path to delete.' },
+      },
+      required: ['path'],
+    },
+    defaultConfig: { allowed_dirs: [] },
+    executor: execDeleteFile,
+  },
+  {
+    name: 'list_directory',
+    description: 'Use to list the contents of a directory (like ls).',
+    schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Directory path to list.' },
+      },
+      required: ['path'],
+    },
+    defaultConfig: { allowed_dirs: [] },
+    executor: execListDirectory,
+  },
+  {
+    name: 'find_files',
+    description: 'Use to find files by glob pattern (e.g. "**/*.ts").',
+    schema: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'Glob pattern to search.' },
+        cwd:     { type: 'string', description: 'Directory to search within.' },
+      },
+      required: ['pattern'],
+    },
+    defaultConfig: {},
+    executor: execFindFiles,
+  },
+  {
+    name: 'search_files',
+    description: 'Use to search for content inside files using Regex (grep equivalent). Skips node_modules.',
+    schema: {
+      type: 'object',
+      properties: {
+        query:        { type: 'string', description: 'Regex query to find.' },
+        file_pattern: { type: 'string', description: 'Glob pattern for files to check. Default: **/*.*' },
+        cwd:          { type: 'string', description: 'Directory to search within.' },
+      },
+      required: ['query'],
+    },
+    defaultConfig: {},
+    executor: execSearchFiles,
   },
   {
     name: 'run_command',

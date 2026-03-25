@@ -18,6 +18,7 @@
     "dotenv": "^16.4.5",
     "express": "^4.21.1",
     "express-rate-limit": "^7.4.1",
+    "glob": "^13.0.6",
     "helmet": "^8.0.0",
     "openai": "^4.68.0",
     "pg": "^8.13.1",

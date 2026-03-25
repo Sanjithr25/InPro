@@ -97,6 +97,13 @@ export default function ToolsPage() {
     t.description.toLowerCase().includes(search.toLowerCase())
   );
 
+  const FS_NAMES = new Set(['read_file', 'write_file', 'delete_file', 'list_directory', 'find_files', 'search_files']);
+  const groups = [
+    { title: 'File System', icon: '📁', items: filtered.filter(t => FS_NAMES.has(t.name)) },
+    { title: 'Built-ins',   icon: '⚡', items: filtered.filter(t => t.is_builtin && !FS_NAMES.has(t.name)) },
+    { title: 'Custom',      icon: '🔌', items: filtered.filter(t => !t.is_builtin && !FS_NAMES.has(t.name)) },
+  ];
+
   // ── Counts ──────────────────────────────────────────────────────────────────
   const activeCount  = tools.filter(t => t.is_enabled).length;
   const builtinCount = tools.filter(t => t.is_builtin).length;
@@ -243,35 +250,48 @@ export default function ToolsPage() {
             </div>
           )}
 
-          {filtered.map(tool => (
-            <div
-              key={tool.id}
-              className={`list-item${selected?.id === tool.id ? ' selected' : ''}`}
-              onClick={() => selectTool(tool)}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'space-between' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flex: 1 }}>
-                  <span className="list-item-name" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {tool.name}
-                  </span>
-                  {tool.is_builtin && (
-                    <span style={{
-                      fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
-                      padding: '1px 5px', borderRadius: 10, flexShrink: 0,
-                      background: 'color-mix(in srgb, var(--accent) 15%, transparent)',
-                      color: 'var(--accent-hover)',
-                      border: '1px solid color-mix(in srgb, var(--accent) 28%, transparent)',
-                    }}>
-                      BUILT-IN
-                    </span>
-                  )}
-                </div>
-                <label className="toggle" style={{ flexShrink: 0 }} onClick={e => toggle(tool, e)}>
-                  <input type="checkbox" checked={tool.is_enabled} readOnly />
-                  <span className="toggle-track" />
-                </label>
+          {groups.map(g => g.items.length > 0 && (
+            <div key={g.title} style={{ marginBottom: 12 }}>
+              <div style={{
+                fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+                letterSpacing: '0.07em', color: 'var(--text-muted)',
+                padding: '4px 12px 2px', display: 'flex', alignItems: 'center', gap: 5,
+              }}>
+                <span>{g.icon}</span> {g.title}
               </div>
-              <div className="list-item-meta">{tool.description || 'No description'}</div>
+              {g.items.map(tool => (
+                <div
+                  key={tool.id}
+                  className={`list-item${selected?.id === tool.id ? ' selected' : ''}`}
+                  onClick={() => selectTool(tool)}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'space-between' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flex: 1 }}>
+                      <span className="list-item-name" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {tool.name}
+                      </span>
+                      {tool.is_builtin && (
+                        <span style={{
+                          fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
+                          padding: '1px 5px', borderRadius: 10, flexShrink: 0,
+                          background: 'color-mix(in srgb, var(--accent) 15%, transparent)',
+                          color: 'var(--accent-hover)',
+                          border: '1px solid color-mix(in srgb, var(--accent) 28%, transparent)',
+                        }}>
+                          BUILT-IN
+                        </span>
+                      )}
+                    </div>
+                    <label className="toggle" style={{ flexShrink: 0 }} onClick={e => toggle(tool, e)}>
+                      <input type="checkbox" checked={tool.is_enabled} readOnly />
+                      <span className="toggle-track" />
+                    </label>
+                  </div>
+                  <div className="list-item-meta" style={{ marginTop: 4, lineHeight: 1.4, opacity: 0.8 }}>
+                    {tool.description.substring(0, 50)}…
+                  </div>
+                </div>
+              ))}
             </div>
           ))}
         </div>

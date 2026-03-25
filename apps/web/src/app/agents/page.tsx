@@ -219,6 +219,19 @@ export default function AgentsPage() {
       ? `${defaultProvider.provider} — ${defaultProvider.model_name} (default)`
       : 'System default';
 
+  // Group tools for selection UI
+  const groupedTools: { title: string; items: ToolRow[] }[] = [
+    { title: 'File System', items: [] },
+    { title: 'Built-in Utils', items: [] },
+    { title: 'Custom Extensions', items: [] },
+  ];
+  const fsNames = ['read_file', 'write_file', 'delete_file', 'list_directory', 'find_files', 'search_files'];
+  for (const t of tools) {
+    if (fsNames.includes(t.name)) groupedTools[0].items.push(t);
+    else if (t.is_builtin)        groupedTools[1].items.push(t);
+    else                          groupedTools[2].items.push(t);
+  }
+
   return (
     <div className="two-panel">
       {/* ── Left sidebar ──────────────────────────────────────────────────── */}
@@ -414,14 +427,28 @@ export default function AgentsPage() {
               {tools.length === 0 ? (
                 <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>No tools registered yet. <a href="/tools" style={{ color: 'var(--accent-hover)' }}>Add tools →</a></p>
               ) : (
-                <div className="tool-chips">
-                  {tools.map(t => (
-                    <div
-                      key={t.id}
-                      className={`tool-chip${form.tool_ids?.includes(t.id) ? ' selected' : ''}`}
-                      onClick={() => toggleTool(t.id)}
-                    >
-                      {t.name}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                  {groupedTools.map(g => g.items.length > 0 && (
+                    <div key={g.title}>
+                      <div style={{
+                        fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+                        letterSpacing: '0.05em', color: 'var(--text-muted)',
+                        marginBottom: 8
+                      }}>
+                        {g.title}
+                      </div>
+                      <div className="tool-chips">
+                        {g.items.map(t => (
+                          <div
+                            key={t.id}
+                            className={`tool-chip${form.tool_ids?.includes(t.id) ? ' selected' : ''}`}
+                            onClick={() => toggleTool(t.id)}
+                            title={t.description}
+                          >
+                            {t.name}
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   ))}
                 </div>

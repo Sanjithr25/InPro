@@ -40,4 +40,8 @@ export const config = {
     geminiBaseUrl: process.env.GEMINI_BASE_URL,
     customBaseUrl: process.env.CUSTOM_LLM_BASE_URL,
   },
+
+  tools: {
+    tavilyApiKey: process.env.TAVILY_API_KEY ?? '',
+  }
 } as const;
