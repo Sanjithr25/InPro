@@ -4,15 +4,16 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
-  Bot, Wrench, ClipboardList, CalendarClock, History, Settings2, Sun, Moon
+  Bot, Wrench, ClipboardList, CalendarClock, History, Settings2, Sun, Moon, Play
 } from 'lucide-react';
 
 const NAV = [
-  { label: 'Agents',     href: '/agents',    icon: Bot },
-  { label: 'Tools',      href: '/tools',     icon: Wrench },
-  { label: 'Tasks',      href: '/tasks',     icon: ClipboardList },
-  { label: 'Scheduler',  href: '/scheduler', icon: CalendarClock },
-  { label: 'Run History',href: '/history',   icon: History },
+  { label: 'Agents',     href: '/agents',     icon: Bot },
+  { label: 'Tools',      href: '/tools',      icon: Wrench },
+  { label: 'Tasks',      href: '/tasks',      icon: ClipboardList },
+  { label: 'Task Runs',  href: '/task-runs',  icon: Play },
+  { label: 'Scheduler',  href: '/scheduler',  icon: CalendarClock },
+  { label: 'Run History',href: '/history',    icon: History },
 ];
 
 export default function Sidebar() {

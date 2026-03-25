@@ -4,8 +4,9 @@ import { useEffect, useState, useCallback } from 'react';
 import {
   Wrench, Plus, Save, Trash2, Eye, EyeOff,
   FlaskConical, Plug, ChevronDown, X, RotateCcw, Zap,
+  FolderOpen, ChevronUp, Loader2,
 } from 'lucide-react';
-import { toolsApi, type ToolRow } from '@/lib/api';
+import { toolsApi, fsApi, type ToolRow, type FsBrowseResult } from '@/lib/api';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 const FIELD_TYPES = ['text', 'secret', 'select', 'toggle'] as const;
@@ -74,6 +75,96 @@ function TypePill({ type, onClick }: { type: FieldType; onClick: () => void }) {
   );
 }
 
+// ─── Directory Picker Modal ────────────────────────────────────────────────────
+function DirPicker({ onSelect, onClose }: { onSelect: (path: string) => void; onClose: () => void }) {
+  const [browse, setBrowse] = useState<FsBrowseResult | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const go = async (path: string) => {
+    setLoading(true);
+    try {
+      setBrowse(await fsApi.browse(path));
+    } catch (e: any) {
+      alert(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fsApi.home().then(h => go(h.home)).catch(() => go('C:\\'));
+  }, []);
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 1000,
+      background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }} onClick={onClose}>
+      <div style={{
+        background: 'var(--bg-surface)', border: '1px solid var(--border)',
+        borderRadius: 12, padding: 24, width: 480, maxHeight: '70vh',
+        display: 'flex', flexDirection: 'column', gap: 12, boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
+      }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontWeight: 600, fontSize: 15 }}>📁 Choose Directory</span>
+          <button className="btn-icon" onClick={onClose}><X width={15} height={15} /></button>
+        </div>
+
+        <div style={{
+          background: 'var(--bg-elevated)', borderRadius: 6, padding: '6px 10px',
+          fontSize: 12, color: 'var(--text-secondary)', wordBreak: 'break-all', fontFamily: 'monospace'
+        }}>
+          {browse?.current || '…'}
+        </div>
+
+        {/* Nav bar */}
+        <div style={{ display: 'flex', gap: 6 }}>
+          {browse?.parent && (
+            <button
+              className="btn btn-ghost"
+              style={{ fontSize: 12, padding: '4px 10px' }}
+              onClick={() => go(browse.parent!)}
+            >
+              <ChevronUp width={13} height={13} /> Up
+            </button>
+          )}
+        </div>
+
+        {/* Directory list */}
+        <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {loading ? (
+            <div style={{ display: 'flex', justifyContent: 'center', padding: 20 }}>
+              <Loader2 width={20} height={20} className="spin" />
+            </div>
+          ) : browse?.children.length === 0 ? (
+            <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '12px 4px' }}>No sub-folders</div>
+          ) : (
+            browse?.children.map(child => (
+              <button
+                key={child.path}
+                className="nav-item"
+                style={{ justifyContent: 'flex-start', gap: 8, fontWeight: 400, fontSize: 13 }}
+                onClick={() => go(child.path)}
+              >
+                <FolderOpen width={14} height={14} style={{ color: 'var(--accent-hover)', flexShrink: 0 }} />
+                {child.name}
+              </button>
+            ))
+          )}
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={() => { if (browse) onSelect(browse.current); onClose(); }}>
+            <FolderOpen width={13} height={13} /> Select This Folder
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 type TestState = 'idle' | 'testing' | 'ok' | 'fail';
 
 // ─── Page ──────────────────────────────────────────────────────────────────────
@@ -85,6 +176,7 @@ export default function ToolsPage() {
   const [search, setSearch]   = useState('');
   const [saving, setSaving]   = useState(false);
   const [testState, setTestState] = useState<TestState>('idle');
+  const [pickerEntryId, setPickerEntryId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setTools(await toolsApi.list());
@@ -208,6 +300,16 @@ export default function ToolsPage() {
 
   return (
     <div className="two-panel">
+      {/* Directory Picker Modal */}
+      {pickerEntryId && (
+        <DirPicker
+          onClose={() => setPickerEntryId(null)}
+          onSelect={path => {
+            updateEntry(pickerEntryId, { value: path });
+            setPickerEntryId(null);
+          }}
+        />
+      )}
 
       {/* ── Left sidebar ──────────────────────────────────────────────────── */}
       <aside className="panel-left">
@@ -425,7 +527,7 @@ export default function ToolsPage() {
                   />
 
                   {entry.type === 'toggle' ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 4px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 4px', alignSelf: 'flex-start', minHeight: 40 }}>
                       <label className="toggle">
                         <input
                           type="checkbox"
@@ -437,7 +539,7 @@ export default function ToolsPage() {
                       <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{entry.value === 'true' ? 'On' : 'Off'}</span>
                     </div>
                   ) : entry.type === 'select' ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignSelf: 'flex-start' }}>
                       <input
                         className="form-input"
                         placeholder="options (comma-separated)"
@@ -458,28 +560,43 @@ export default function ToolsPage() {
                       </select>
                     </div>
                   ) : (
-                    <div style={{ position: 'relative' }}>
-                      <input
-                        className="form-input"
-                        style={{ fontSize: 13, paddingRight: entry.type === 'secret' ? 36 : undefined }}
-                        type={entry.type === 'secret' && !entry.show ? 'password' : 'text'}
-                        placeholder={entry.type === 'secret' ? '••••••••' : 'value'}
-                        value={entry.value}
-                        onChange={e => updateEntry(entry.id, { value: e.target.value })}
-                      />
-                      {entry.type === 'secret' && (
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start', alignSelf: 'flex-start' }}>
+                      <div style={{ position: 'relative', flex: 1 }}>
+                        <input
+                          className="form-input"
+                          style={{ fontSize: 13, paddingRight: entry.type === 'secret' ? 36 : undefined, width: '100%' }}
+                          type={entry.type === 'secret' && !entry.show ? 'password' : 'text'}
+                          placeholder={entry.type === 'secret' ? '••••••••' : 'value'}
+                          value={entry.value}
+                          onChange={e => updateEntry(entry.id, { value: e.target.value })}
+                        />
+                        {entry.type === 'secret' && (
+                          <button
+                            type="button" className="btn-icon"
+                            style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', background: 'none', padding: 4 }}
+                            onClick={() => updateEntry(entry.id, { show: !entry.show })}
+                          >
+                            {entry.show ? <EyeOff width={13} height={13} /> : <Eye width={13} height={13} />}
+                          </button>
+                        )}
+                      </div>
+                      
+                      {/* Browse button for directory/path keys */}
+                      {(entry.key === 'allowed_dirs' || entry.key.toLowerCase().includes('dir') || entry.key.toLowerCase().includes('path')) && (
                         <button
-                          type="button" className="btn-icon"
-                          style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', background: 'none', padding: 4 }}
-                          onClick={() => updateEntry(entry.id, { show: !entry.show })}
+                          type="button"
+                          className="btn btn-ghost"
+                          style={{ fontSize: 11, padding: '0 8px', height: 38, flexShrink: 0, whiteSpace: 'nowrap' }}
+                          onClick={() => setPickerEntryId(entry.id)}
+                          title="Browse server filesystem"
                         >
-                          {entry.show ? <EyeOff width={13} height={13} /> : <Eye width={13} height={13} />}
+                          <FolderOpen width={12} height={12} /> <span style={{marginLeft: 4}}>Browse</span>
                         </button>
                       )}
                     </div>
                   )}
 
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, alignSelf: 'flex-start', minHeight: 40 }}>
                     <TypePill type={entry.type} onClick={() => cycleType(entry.id, entry.type)} />
                     <button className="btn-icon" onClick={() => removeEntry(entry.id)} title="Remove" style={{ padding: 5 }}>
                       <X width={13} height={13} />

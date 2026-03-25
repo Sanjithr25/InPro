@@ -96,6 +96,14 @@ export class AgentNode implements IExecutableNode {
 
       while (turn < MAX_TURNS) {
         turn++;
+
+        // Check for kill signal before each LLM call or tool execution
+        if (ctx.abortSignal?.aborted) {
+          console.log(`[AgentNode] Agent "${agent.name}" was killed at turn ${turn}.`);
+          outputText += '\n\n[Agent was killed by user]';
+          break;
+        }
+
         console.log(`[AgentNode] Turn ${turn} — calling LLM (${providerOverride.provider ?? 'default'})`);
 
         const response = await llm.chat(messages, toolDefs, { maxTokens: 4096 });
@@ -139,7 +147,7 @@ export class AgentNode implements IExecutableNode {
           } else {
             executionHistory.add(callFingerprint);
             try {
-              toolResult = await ToolRegistry.execute(tc.name, tc.arguments, agentId as string | undefined);
+              toolResult = await ToolRegistry.execute(tc.name, tc.arguments, agentId as string | undefined, ctx.abortSignal);
             } catch (toolErr: any) {
               toolResult = { error: toolErr.message };
             }

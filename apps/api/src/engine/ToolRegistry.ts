@@ -17,21 +17,67 @@
 
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readFile, writeFile, unlink, readdir, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFile, writeFile, unlink, readdir, mkdir } from 'node:fs/promises';
+import { join, isAbsolute, dirname, basename } from 'node:path';
+import { homedir } from 'node:os';
 import db from '../db/client.js';
 import { tavily } from '@tavily/core';
 import { config as appConfig } from '../config.js';
 import { glob } from 'glob';
 
 const execAsync = promisify(exec);
+const DOCS_DIR = join(homedir(), 'Documents');
+
+// Normalize allowed_dirs: the frontend config editor saves values as plain strings.
+// Handles: real string[], single path string, JSON-encoded array, comma-separated paths.
+function normalizeAllowedDirs(raw: unknown): string[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return (raw as string[]).map(s => s.trim()).filter(Boolean);
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    if (!s) return [];
+    try {
+      const parsed = JSON.parse(s);
+      if (Array.isArray(parsed)) return parsed.map((x: unknown) => String(x).trim()).filter(Boolean);
+      if (typeof parsed === 'string') return [parsed.trim()];
+    } catch { /* not JSON */ }
+    return s.split(',').map(x => x.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+// Resolves a requested path within allowed dirs, strips redundant prefixes, auto-creates dirs.
+function resolveSafePath(requestedPath: string, rawAllowedDirs: unknown): string {
+  const allowedDirs = normalizeAllowedDirs(rawAllowedDirs);
+  const safeRoot = allowedDirs[0] || DOCS_DIR;
+
+  let cleanPath = requestedPath.replace(/\\/g, '/');
+  // Strip redundant root folder prefix (e.g. "UserData/file.txt" -> "file.txt" when root is UserData)
+  const rootBasename = basename(safeRoot).toLowerCase();
+  if (cleanPath.toLowerCase().startsWith(`${rootBasename}/`)) {
+    cleanPath = cleanPath.substring(rootBasename.length + 1);
+  }
+  // Strip "Documents/" prefix that LLMs often prepend from training data knowledge
+  if (cleanPath.toLowerCase().startsWith('documents/')) {
+    cleanPath = cleanPath.substring('documents/'.length);
+  }
+
+  const abs = isAbsolute(cleanPath) ? cleanPath : join(safeRoot, cleanPath);
+  const finalAllowed = allowedDirs.length > 0 ? allowedDirs : [DOCS_DIR];
+  const isAllowed = finalAllowed.some(d => abs.startsWith(d));
+
+  if (!isAllowed) {
+    throw new Error(`Access denied: "${requestedPath}" resolved to "${abs}" — outside allowed dirs (${finalAllowed.join(', ')}).`);
+  }
+  return abs;
+}
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
 type Args   = Record<string, unknown>;
 type Config = Record<string, unknown>;
 type Result = Record<string, unknown>;
-type Executor = (args: Args, config: Config) => Promise<Result>;
+type Executor = (args: Args, config: Config, signal?: AbortSignal) => Promise<Result>;
 
 export interface ToolDefinitionEntry {
   name: string;
@@ -43,7 +89,7 @@ export interface ToolDefinitionEntry {
 
 // ─── Built-in Executors ────────────────────────────────────────────────────────
 
-const execWebSearch: Executor = async (args, config) => {
+const execWebSearch: Executor = async (args, config, signal) => {
   const query      = args.query as string;
   const numResults = Math.min(Math.max((args.num_results as number) ?? 5, 1), 10);
   
@@ -59,6 +105,7 @@ const execWebSearch: Executor = async (args, config) => {
   }
 
   try {
+    if (signal?.aborted) throw new Error('Aborted');
     const tvly = tavily({ apiKey });
     const response = await tvly.search(query, {
       maxResults: numResults,
@@ -101,7 +148,7 @@ const execWebSearch: Executor = async (args, config) => {
   }
 };
 
-const execHttpRequest: Executor = async (args, config) => {
+const execHttpRequest: Executor = async (args, config, signal) => {
   const { url, method = 'GET', body, headers: extraHeaders = {} } = args as any;
   const timeout = (config.max_timeout_ms as number) ?? 10000;
   const controller = new AbortController();
@@ -111,7 +158,7 @@ const execHttpRequest: Executor = async (args, config) => {
       method,
       headers: { 'Content-Type': 'application/json', ...(extraHeaders as Record<string, string>) },
       body: !['GET', 'HEAD'].includes(method) && body ? body : undefined,
-      signal: controller.signal,
+      signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
     });
     const text = await res.text();
     let parsed: unknown = text;
@@ -131,7 +178,7 @@ const execHttpRequest: Executor = async (args, config) => {
   }
 };
 
-const execCalculator: Executor = async (args) => {
+const execCalculator: Executor = async (args, _config, _signal) => {
   const expr = (args.expression as string).trim();
   const safe = expr.replace(/[^0-9+\-*/().,%^Math.sqrtpowfloorscielabsPI\s]/g, '');
   if (safe !== expr) {
@@ -149,130 +196,110 @@ const execCalculator: Executor = async (args) => {
   }
 };
 
-const execReadFile: Executor = async (args, config) => {
-  const filePath   = args.path as string;
+const execReadFile: Executor = async (args, config, _signal) => {
+  const requestedPath = args.path as string;
   const encoding   = (args.encoding as BufferEncoding) ?? 'utf-8';
   const maxChars   = (args.max_chars as number) ?? 8000;
-  const allowedDirs = (config.allowed_dirs as string[]) ?? [];
-  if (allowedDirs.length > 0) {
-    const abs     = filePath.startsWith('/') ? filePath : join(process.cwd(), filePath);
-    const allowed = allowedDirs.some(d => abs.startsWith(d));
-    if (!allowed) {
-      return { error: 'terminal', message: `Access denied: "${filePath}" is outside allowed_dirs.`, path: filePath };
-    }
-  }
   try {
-    const content   = await readFile(filePath, { encoding });
+    const filePath = resolveSafePath(requestedPath, config.allowed_dirs);
+    console.log(`[ToolRegistry] 📂 read_file: ${filePath}`);
+    const content  = await readFile(filePath, { encoding });
     const truncated = content.length > maxChars;
     return {
-      path: filePath, content: truncated ? content.slice(0, maxChars) : content,
+      path: requestedPath, resolved_path: filePath,
+      content: truncated ? content.slice(0, maxChars) : content,
       size: content.length, truncated,
-      ...(truncated ? { note: `Truncated at ${maxChars} chars. Set max_chars higher to read more.` } : {}),
+      ...(truncated ? { note: `Truncated at ${maxChars} chars.` } : {}),
     };
   } catch (e: any) {
-    return {
-      error: e.code === 'ENOENT' ? 'terminal' : 'recoverable',
-      message: e.code === 'ENOENT' ? `File not found: "${filePath}".` : `Read failed: ${e.message}`,
-      path: filePath,
-    };
+    return { error: 'recoverable', message: e.message, path: requestedPath };
   }
 };
 
-const execWriteFile: Executor = async (args, config) => {
-  const filePath   = args.path as string;
-  const content    = args.content as string;
-  const allowedDirs = (config.allowed_dirs as string[]) ?? [];
-  if (allowedDirs.length > 0) {
-    const abs     = filePath.startsWith('/') ? filePath : join(process.cwd(), filePath);
-    const allowed = allowedDirs.some(d => abs.startsWith(d));
-    if (!allowed) {
-      return { error: 'terminal', message: `Access denied: "${filePath}" is outside allowed_dirs.`, path: filePath };
-    }
-  }
+const execWriteFile: Executor = async (args, config, _signal) => {
+  const requestedPath = args.path as string;
+  const content = args.content as string;
   try {
+    const filePath = resolveSafePath(requestedPath, config.allowed_dirs);
+    console.log(`[ToolRegistry] 💾 write_file: ${filePath}`);
+    await mkdir(dirname(filePath), { recursive: true });
     await writeFile(filePath, content, 'utf-8');
-    return { path: filePath, bytes_written: Buffer.byteLength(content, 'utf-8'), success: true };
+    return { path: requestedPath, resolved_path: filePath, bytes_written: Buffer.byteLength(content, 'utf-8'), success: true };
   } catch (e: any) {
-    return { error: 'recoverable', message: `Write failed: ${e.message}`, path: filePath };
+    return { error: 'recoverable', message: e.message, path: requestedPath };
   }
 };
 
-const execDeleteFile: Executor = async (args, config) => {
-  const filePath = args.path as string;
-  const allowedDirs = (config.allowed_dirs as string[]) ?? [];
-  if (allowedDirs.length > 0) {
-    const abs = filePath.startsWith('/') ? filePath : join(process.cwd(), filePath);
-    if (!allowedDirs.some(d => abs.startsWith(d))) {
-      return { error: 'terminal', message: `Access denied.`, path: filePath };
-    }
-  }
+const execDeleteFile: Executor = async (args, config, _signal) => {
+  const requestedPath = args.path as string;
   try {
+    const filePath = resolveSafePath(requestedPath, config.allowed_dirs);
+    console.log(`[ToolRegistry] 🗑️ delete_file: ${filePath}`);
     await unlink(filePath);
-    return { path: filePath, deleted: true };
+    return { path: requestedPath, resolved_path: filePath, deleted: true };
   } catch (e: any) {
-    return { error: 'recoverable', message: `Delete failed: ${e.message}`, path: filePath };
+    return { error: 'recoverable', message: e.message, path: requestedPath };
   }
 };
 
-const execListDirectory: Executor = async (args, config) => {
-  const dirPath = args.path as string;
-  const allowedDirs = (config.allowed_dirs as string[]) ?? [];
-  if (allowedDirs.length > 0) {
-    const abs = dirPath.startsWith('/') ? dirPath : join(process.cwd(), dirPath);
-    if (!allowedDirs.some(d => abs.startsWith(d))) {
-      return { error: 'terminal', message: `Access denied.`, path: dirPath };
-    }
-  }
+const execListDirectory: Executor = async (args, config, _signal) => {
+  const requestedPath = args.path as string;
   try {
+    const dirPath = resolveSafePath(requestedPath, config.allowed_dirs);
+    console.log(`[ToolRegistry] 📁 list_directory: ${dirPath}`);
     const entries = await readdir(dirPath, { withFileTypes: true });
     return {
-      path: dirPath,
+      path: requestedPath, resolved_path: dirPath,
       entries: entries.map(e => ({ name: e.name, type: e.isDirectory() ? 'directory' : e.isFile() ? 'file' : 'other' })),
     };
   } catch (e: any) {
-    return { error: 'recoverable', message: `List failed: ${e.message}`, path: dirPath };
+    return { error: 'recoverable', message: e.message, path: requestedPath };
   }
 };
 
-const execFindFiles: Executor = async (args, config) => {
+const execFindFiles: Executor = async (args, config, _signal) => {
   const pattern = args.pattern as string;
-  const cwd = (args.cwd as string) || process.cwd();
+  const allowedDirs = normalizeAllowedDirs(config.allowed_dirs);
+  const safeRoot = allowedDirs[0] || DOCS_DIR;
   try {
-    const matches = await glob(pattern, { cwd, absolute: true, nodir: true });
-    return { cwd, pattern, matches: matches.slice(0, 100), count: matches.length };
+    const matches = await glob(pattern, { cwd: safeRoot, absolute: true, nodir: true });
+    return { root: safeRoot, pattern, matches: matches.slice(0, 100), count: matches.length };
   } catch (e: any) {
     return { error: 'recoverable', message: `Find failed: ${e.message}` };
   }
 };
 
-const execSearchFiles: Executor = async (args, config) => {
+const execSearchFiles: Executor = async (args, config, signal) => {
   const regexQuery = args.query as string;
   const pattern = (args.file_pattern as string) || '**/*.*';
-  const cwd = (args.cwd as string) || process.cwd();
+  const allowedDirs = normalizeAllowedDirs(config.allowed_dirs);
+  const safeRoot = allowedDirs[0] || DOCS_DIR;
   try {
-    const files = await glob(pattern, { cwd, absolute: true, nodir: true, ignore: 'node_modules/**' });
+    const files = await glob(pattern, { cwd: safeRoot, absolute: true, nodir: true, ignore: 'node_modules/**' });
     const regex = new RegExp(regexQuery, 'gi');
-    const results = [];
+    const results: { file: string; line: number; content: string }[] = [];
     for (const file of files.slice(0, 200)) {
+      if (signal?.aborted) break;
       try {
         const text = await readFile(file, 'utf-8');
         const lines = text.split('\n');
         for (let i = 0; i < lines.length; i++) {
+          if (signal?.aborted) break;
           if (regex.test(lines[i])) {
             results.push({ file, line: i + 1, content: lines[i].trim() });
             if (results.length >= 100) break;
           }
         }
-      } catch { /* ignore read errors for binary/protected files */ }
+      } catch { /* ignore */ }
       if (results.length >= 100) break;
     }
-    return { query: regexQuery, results, count: results.length };
+    return { query: regexQuery, root: safeRoot, results, count: results.length };
   } catch (e: any) {
     return { error: 'recoverable', message: `Search failed: ${e.message}` };
   }
 };
 
-const execRunCommand: Executor = async (args, config) => {
+const execRunCommand: Executor = async (args, config, signal) => {
   const command     = args.command as string;
   const cwd         = (args.cwd as string) || process.cwd();
   const timeout     = (config.timeout_ms as number) ?? 15000;
@@ -284,14 +311,17 @@ const execRunCommand: Executor = async (args, config) => {
     }
   }
   try {
-    const { stdout, stderr } = await execAsync(command, { cwd, timeout });
+    const { stdout, stderr } = await execAsync(command, { cwd, timeout, signal });
     return { command, cwd, stdout: stdout.trim(), stderr: stderr.trim(), success: true };
   } catch (e: any) {
+    if (e.name === 'AbortError') {
+      return { error: 'recoverable', message: 'Command was aborted/killed.', command };
+    }
     return { error: 'recoverable', message: `Command failed: ${e.message}`, command, stdout: e.stdout?.trim() ?? '', stderr: e.stderr?.trim() ?? '', success: false };
   }
 };
 
-const execGetDatetime: Executor = async (args) => {
+const execGetDatetime: Executor = async (args, _config, _signal) => {
   const fmt = (args.format as string) ?? 'iso';
   const tz  = (args.timezone as string) ?? 'UTC';
   try {
@@ -523,9 +553,11 @@ export class ToolRegistry {
   static async execute(
     toolName: string,
     args: Args,
-    _agentId?: string
+    _agentId?: string,
+    signal?: AbortSignal
   ): Promise<Result> {
-    console.log(`[ToolRegistry] "${toolName}"`, args);
+    const argsStr = JSON.stringify(args);
+    console.log(`[ToolRegistry] 🔧 Executing "${toolName}" with args: ${argsStr.length > 500 ? argsStr.slice(0, 500) + '...' : argsStr}`);
 
     // Load tool row from DB
     const { rows } = await db.query(
@@ -557,7 +589,7 @@ export class ToolRegistry {
     const executor = EXECUTOR_MAP.get(toolName);
     if (executor) {
       try {
-        return await executor(args, config);
+        return await executor(args, config, signal);
       } catch (e: any) {
         console.error(`[ToolRegistry] Built-in "${toolName}" threw:`, e);
         return {
@@ -581,7 +613,7 @@ export class ToolRegistry {
         const res  = await fetch(endpoint, {
           method, headers,
           body: method !== 'GET' ? JSON.stringify(args) : undefined,
-          signal: controller.signal,
+          signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
         });
         const text = await res.text();
         let parsed: unknown;

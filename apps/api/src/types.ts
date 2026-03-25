@@ -6,6 +6,7 @@ export interface ExecutionContext {
   totalSteps: number;
   maxDepth: number;
   parentRunId: string | null;
+  abortSignal?: AbortSignal;
 }
 
 export interface ExecutionResult {

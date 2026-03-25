@@ -111,6 +111,51 @@ export const tasksApi = {
       method: 'POST',
       body: JSON.stringify({ description, agentIds }),
     }),
+  dryRun: (id: string, prompt?: string) =>
+    req<{ success: boolean; output: { text: string; steps: number }; error?: string }>(
+      `/api/tasks/${id}/dry-run`, { method: 'POST', body: JSON.stringify({ prompt: prompt ?? '' }) }
+    ),
+};
+
+// ─── Task Runs ────────────────────────────────────────────────────────────────
+export type AgentRunRow = {
+  id: string;
+  agent_id: string;
+  agent_name: string | null;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  input_data: { prompt?: string };
+  output_data: { text?: string; steps?: number } | null;
+  error_message: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  duration_seconds: number | null;
+};
+
+export type TaskRunRow = {
+  id: string;
+  task_id: string;
+  task_name: string | null;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  input_data: { initialPrompt?: string; agents?: number };
+  output_data: { text?: string; steps?: number; summary?: string } | null;
+  error_message: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  duration_seconds: number | null;
+  created_at: string;
+  agent_runs_count?: number;
+  agent_runs?: AgentRunRow[];
+};
+
+export const taskRunsApi = {
+  list: () => req<TaskRunRow[]>('/api/task-runs'),
+  get:  (id: string) => req<TaskRunRow>(`/api/task-runs/${id}`),
+  run:  (task_id: string, prompt?: string) =>
+    req<{ run_id: string | null; status: string }>(
+      '/api/task-runs', { method: 'POST', body: JSON.stringify({ task_id, prompt: prompt ?? '' }) }
+    ),
+  kill:   (id: string) => req<{ killed: boolean }>(`/api/task-runs/${id}/kill`, { method: 'POST' }),
+  delete: (id: string) => req<{ deleted: boolean }>(`/api/task-runs/${id}`, { method: 'DELETE' }),
 };
 
 // ─── LLM Settings ────────────────────────────────────────────────────────────
@@ -129,3 +174,23 @@ export const llmApi = {
   delete: (id: string) =>
     req<{ deleted: boolean; agentsUpdated: number; message: string }>(`/api/llm-settings/${id}`, { method: 'DELETE' }),
 };
+
+// ─── Filesystem Browser ───────────────────────────────────────────────────────
+export type FsBrowseResult = {
+  current: string;
+  parent: string | null;
+  is_root: boolean;
+  children: { name: string; path: string }[];
+};
+
+export type FsHomeResult = {
+  home: string;
+  documents: string;
+  desktop: string;
+};
+
+export const fsApi = {
+  home: () => req<FsHomeResult>('/api/fs/home'),
+  browse: (path: string) => req<FsBrowseResult>(`/api/fs/browse?path=${encodeURIComponent(path)}`),
+};
+

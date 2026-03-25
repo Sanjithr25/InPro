@@ -92,7 +92,7 @@ router.put('/:id', handle(async (req, res) => {
   for (const [k, v] of Object.entries(parsed.data)) {
     if (v !== undefined) {
       sets.push(`${k} = $${i++}`);
-      vals.push(typeof v === 'object' ? JSON.stringify(v) : v);
+      vals.push(v === null ? null : typeof v === 'object' ? JSON.stringify(v) : v);
     }
   }
   if (sets.length === 0) { res.json({ data: { updated: false } }); return; }
@@ -120,6 +120,23 @@ router.post('/:id/run', handle(async (req, res) => {
   };
   const taskNode  = new TaskNode();
   const result    = await taskNode.execute(ctx);
+  res.json({ data: result });
+}));
+
+// ─── POST /api/tasks/:id/dry-run ─────────────────────────────────────────────
+// Runs the task exactly like a normal run but marks it dry_run=true so TaskNode
+// skips writing to execution_runs. Good for testing workflow correctness.
+router.post('/:id/dry-run', handle(async (req, res) => {
+  const { prompt } = z.object({ prompt: z.string().default('') }).parse(req.body);
+  const ctx: ExecutionContext = {
+    inputData: { taskId: req.params.id, initialPrompt: prompt, dry_run: true },
+    currentDepth: 0,
+    totalSteps: 0,
+    maxDepth: 10,
+    parentRunId: null,
+  };
+  const taskNode = new TaskNode();
+  const result   = await taskNode.execute(ctx);
   res.json({ data: result });
 }));
 
@@ -158,9 +175,9 @@ router.post('/generate-workflow', handle(async (req, res) => {
     `- Agent: "${a.name}" (id: ${a.id})\n  Skill: ${(a.skill as string).slice(0, 120)}…`
   ).join('\n');
 
-  const systemPrompt = `You are a workflow planner. Given a task description and a list of AI agents, 
-generate a linear step-by-step workflow. Each step must be assigned to one of the provided agents.
-Respond with ONLY a valid JSON array. No markdown, no explanation, just the array.
+  const systemPrompt = `You are a workflow planner. Given a task description and a list of AI agents, generate a linear step-by-step workflow. Each step must be assigned to one of the provided agents.
+
+CRITICAL: Your entire response must be ONLY a valid JSON array. Do NOT include any explanation, markdown, code fences, or preamble. Start your response with [ and end with ].
 
 Format:
 [
@@ -187,20 +204,43 @@ Generate a workflow of ${Math.min(agents.length, 5)} steps using these agents.`;
     { maxTokens: 1024 }
   );
 
-  // Parse LLM output — strip markdown fences if present
-  let raw = (response.content ?? '').trim();
-  raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  // Parse LLM output — robustly extract JSON array from response
+  const rawFull = (response.content ?? '').trim();
+  console.log('[tasks/generate-workflow] Raw LLM response:', rawFull.slice(0, 500));
 
+  // Strategy 1: strip markdown fences (handle multiline fences too)
+  let raw = rawFull.replace(/^```(?:json)?[\s\S]*?\n/i, '').replace(/\n?```\s*$/i, '').trim();
+
+  // Strategy 2: if still not valid, try extracting first [...] block
   let steps: unknown[];
   try {
     steps = JSON.parse(raw);
     if (!Array.isArray(steps)) throw new Error('Not an array');
   } catch {
-    res.status(422).json({
-      error: 'LLM returned invalid workflow JSON.',
-      raw: response.content,
-    });
-    return;
+    // Fallback: find first JSON array in the string
+    const arrMatch = rawFull.match(/\[[\s\S]*?\]/);
+    if (arrMatch) {
+      try {
+        steps = JSON.parse(arrMatch[0]);
+        if (!Array.isArray(steps)) throw new Error('Not an array');
+      } catch {
+        console.error('[tasks/generate-workflow] Failed to parse LLM JSON. Raw:', rawFull);
+        res.status(422).json({
+          error: 'LLM returned invalid workflow JSON.',
+          hint: 'The LLM did not respond with a valid JSON array. Try again or switch to a more capable model.',
+          raw: rawFull,
+        });
+        return;
+      }
+    } else {
+      console.error('[tasks/generate-workflow] No JSON array found in LLM response. Raw:', rawFull);
+      res.status(422).json({
+        error: 'LLM returned invalid workflow JSON.',
+        hint: 'No JSON array found in the response. Try again or switch to a more capable model.',
+        raw: rawFull,
+      });
+      return;
+    }
   }
 
   // Validate + sanitize each step

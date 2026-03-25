@@ -193,7 +193,15 @@ router.post('/:id/stream', async (req: Request, res: Response) => {
 
     // 4. Agentic streaming loop
     const messages: ChatMessage[] = [
-      { role: 'system', content: agent.skill ?? 'You are a helpful AI assistant.' },
+      { 
+        role: 'system', 
+        content: `${agent.skill ?? 'You are a helpful AI assistant.'}
+        
+SYSTEM DIRECTIVE: You have a sandboxed filesystem. 
+- Use the provided file tools to manage files. 
+- Do NOT prepend 'Documents/' to paths unless explicitly asked; the system handles the root directory for you automatically.
+- Your target directory is currently set and enforced by the system.`
+      },
       { role: 'user',   content: parsed.data.prompt },
     ];
 

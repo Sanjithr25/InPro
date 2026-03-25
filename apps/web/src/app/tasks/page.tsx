@@ -2,9 +2,9 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react';
 import {
-  Plus, Save, Trash2, Play, Loader2, ChevronDown,
+  Plus, Save, Trash2, Loader2, ChevronDown,
   GitBranch, Sparkles, GripVertical, X, CheckCircle2,
-  XCircle, Clock, Zap, ArrowRight, RotateCcw,
+  XCircle, Clock, Zap, ArrowRight, Play, FlaskConical,
 } from 'lucide-react';
 import {
   tasksApi, agentsApi, llmApi,
@@ -18,30 +18,6 @@ const blankTask = (): Omit<TaskRow, 'id' | 'created_at'> & { entries: WorkflowSt
   entries: [],
   llm_provider_id: null,
 });
-
-const statusColor: Record<string, string> = {
-  completed: 'var(--green)',
-  failed:    'var(--red)',
-  running:   'var(--accent-hover)',
-  pending:   'var(--yellow)',
-};
-
-const statusIcon: Record<string, React.ReactNode> = {
-  completed: <CheckCircle2 width={12} height={12} />,
-  failed:    <XCircle      width={12} height={12} />,
-  running:   <Loader2      width={12} height={12} className="spin" />,
-  pending:   <Clock        width={12} height={12} />,
-};
-
-function timeAgo(iso: string) {
-  const diff = Date.now() - new Date(iso).getTime();
-  const m = Math.floor(diff / 60000);
-  if (m < 1) return 'just now';
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
-}
 
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 export default function TasksPage() {
@@ -57,11 +33,12 @@ export default function TasksPage() {
   // Generate workflow state
   const [generating, setGenerating]  = useState(false);
   const [genAgentIds, setGenAgentIds] = useState<string[]>([]);
+  const [savedFeedback, setSavedFeedback] = useState(false);
 
-  // Run state
-  const [running, setRunning]      = useState(false);
-  const [runPrompt, setRunPrompt]  = useState('');
-  const [runResult, setRunResult]  = useState<{ success: boolean; output: { text: string; steps: number }; error?: string; tokenUsage?: { inputTokens: number; outputTokens: number } } | null>(null);
+  // Dry run state
+  const [dryRunPrompt, setDryRunPrompt] = useState('');
+  const [dryRunning, setDryRunning]     = useState(false);
+  const [dryRunResult, setDryRunResult] = useState<{ success: boolean; output: { text: string; steps: number }; error?: string } | null>(null);
 
   // Drag-drop
   const dragIdx = useRef<number | null>(null);
@@ -89,8 +66,6 @@ export default function TasksPage() {
     setForm({ name: full.name, description: full.description, llm_provider_id: full.llm_provider_id, workflow_definition: steps, entries: steps });
     setGenAgentIds(steps.map(s => s.agentId));
     setIsNew(false);
-    setRunResult(null);
-    setRunPrompt('');
   };
 
   // ── New ────────────────────────────────────────────────────────────────────
@@ -99,8 +74,6 @@ export default function TasksPage() {
     setForm(blankTask());
     setGenAgentIds([]);
     setIsNew(true);
-    setRunResult(null);
-    setRunPrompt('');
   };
 
   // ── Save ───────────────────────────────────────────────────────────────────
@@ -122,6 +95,12 @@ export default function TasksPage() {
       } else if (selected) {
         await tasksApi.update(selected.id, payload);
         await load();
+        const refreshed = await tasksApi.get(selected.id);
+        const steps = Array.isArray(refreshed.workflow_definition) ? refreshed.workflow_definition : [];
+        setForm(f => ({ ...f, entries: steps, workflow_definition: steps }));
+        setSelected(refreshed);
+        setSavedFeedback(true);
+        setTimeout(() => setSavedFeedback(false), 2000);
       }
     } finally {
       setSaving(false);
@@ -151,19 +130,23 @@ export default function TasksPage() {
     }
   };
 
-  // ── Run task ───────────────────────────────────────────────────────────────
-  const runTask = async () => {
+  // ── Dry Run (inline test, NO history record) ──────────────────────────────
+  const runDryRun = async () => {
     if (!selected) return;
-    setRunning(true);
-    setRunResult(null);
+    setDryRunning(true);
+    setDryRunResult(null);
+    // Auto-save first to ensure DB has latest workflow
     try {
-      const result = await tasksApi.run(selected.id, runPrompt);
-      setRunResult(result as any);
-      await load(); // refresh last_run_status
+      await tasksApi.update(selected.id, {
+        name: form.name, description: form.description,
+        workflow_definition: form.entries, llm_provider_id: form.llm_provider_id ?? null,
+      });
+      const result = await tasksApi.dryRun(selected.id, dryRunPrompt);
+      setDryRunResult(result);
     } catch (e: any) {
-      setRunResult({ success: false, output: { text: '', steps: 0 }, error: e.message });
+      setDryRunResult({ success: false, output: { text: '', steps: 0 }, error: e.message });
     } finally {
-      setRunning(false);
+      setDryRunning(false);
     }
   };
 
@@ -252,8 +235,7 @@ export default function TasksPage() {
                   {task.name}
                 </span>
                 {task.last_run_status && (
-                  <span style={{ fontSize: 10, color: statusColor[task.last_run_status] ?? 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0 }}>
-                    {statusIcon[task.last_run_status]}
+                  <span style={{ fontSize: 10, color: task.last_run_status === 'completed' ? 'var(--green)' : task.last_run_status === 'failed' ? 'var(--red)' : 'var(--text-muted)', flexShrink: 0 }}>
                     {task.last_run_status}
                   </span>
                 )}
@@ -268,17 +250,12 @@ export default function TasksPage() {
                   </span>
                 )}
               </div>
-              {task.last_run_at && (
-                <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
-                  {timeAgo(task.last_run_at)}
-                </div>
-              )}
             </div>
           ))}
         </div>
       </aside>
 
-      {/* ── Right panel ───────────────────────────────────────────────────── */}
+      {/* ── Right panel ─────────────────────────────────────────────────────── */}
       <div className="panel-right">
 
         {!showForm && (
@@ -301,7 +278,12 @@ export default function TasksPage() {
                   {isNew ? 'Define a multi-agent workflow' : `ID: ${selected?.id}`}
                 </div>
               </div>
-              <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+              <div style={{ display: 'flex', gap: 8, flexShrink: 0, alignItems: 'center' }}>
+                {savedFeedback && (
+                  <span style={{ fontSize: 12, color: 'var(--green)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <CheckCircle2 width={13} height={13} /> Saved!
+                  </span>
+                )}
                 {!isNew && (
                   <button className="btn btn-danger" onClick={del}>
                     <Trash2 width={14} height={14} /> Delete
@@ -314,7 +296,7 @@ export default function TasksPage() {
               </div>
             </div>
 
-            {/* ── Identity ─────────────────────────────────────────────────── */}
+            {/* ── Identity ──────────────────────────────────────────────────── */}
             <div className="card">
               <div className="card-title"><GitBranch width={16} height={16} /> Task Identity</div>
 
@@ -365,7 +347,7 @@ export default function TasksPage() {
               </div>
             </div>
 
-            {/* ── AI Workflow Generator ─────────────────────────────────────── */}
+            {/* ── AI Workflow Generator ──────────────────────────────────────── */}
             <div className="card">
               <div className="card-title"><Sparkles width={16} height={16} /> AI Workflow Generator</div>
               <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
@@ -382,7 +364,7 @@ export default function TasksPage() {
                     <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>No agents found — create agents first.</span>
                   )}
                   {agents.map(agent => {
-                    const selected = genAgentIds.includes(agent.id);
+                    const sel = genAgentIds.includes(agent.id);
                     return (
                       <button
                         key={agent.id}
@@ -390,9 +372,9 @@ export default function TasksPage() {
                         onClick={() => toggleGenAgent(agent.id)}
                         style={{
                           fontSize: 12, padding: '4px 12px', borderRadius: 20,
-                          border: `1px solid ${selected ? 'var(--accent)' : 'var(--border)'}`,
-                          background: selected ? 'color-mix(in srgb, var(--accent) 15%, transparent)' : 'var(--bg-elevated)',
-                          color: selected ? 'var(--accent-hover)' : 'var(--text-secondary)',
+                          border: `1px solid ${sel ? 'var(--accent)' : 'var(--border)'}`,
+                          background: sel ? 'color-mix(in srgb, var(--accent) 15%, transparent)' : 'var(--bg-elevated)',
+                          color: sel ? 'var(--accent-hover)' : 'var(--text-secondary)',
                           cursor: 'pointer', transition: 'all 0.15s',
                         }}
                       >
@@ -422,7 +404,7 @@ export default function TasksPage() {
               )}
             </div>
 
-            {/* ── Workflow Steps ────────────────────────────────────────────── */}
+            {/* ── Workflow Steps ─────────────────────────────────────────────── */}
             <div className="card">
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
                 <div className="card-title" style={{ margin: 0 }}>
@@ -543,66 +525,63 @@ export default function TasksPage() {
               )}
             </div>
 
-            {/* ── Dry Run ──────────────────────────────────────────────────── */}
+            {/* ── Dry Run ───────────────────────────────────────────────────── */}
             {!isNew && selected && (
               <div className="card">
-                <div className="card-title"><Play width={16} height={16} /> Run Task</div>
-                <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
-                  Execute all {form.entries.length} step{form.entries.length !== 1 ? 's' : ''} sequentially.
-                  Each agent's output feeds into the next step's context.
-                </p>
-
+                <div className="card-title"><FlaskConical width={16} height={16} /> Dry Run
+                  <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-muted)', marginLeft: 8 }}>Tests your workflow without saving to Run History</span>
+                </div>
                 <div className="form-group">
                   <label className="form-label">Initial Prompt <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(optional)</span></label>
                   <textarea
                     className="form-textarea"
-                    rows={3}
-                    placeholder="e.g. Research the latest AI trends and summarize key developments…"
-                    value={runPrompt}
-                    onChange={e => setRunPrompt(e.target.value)}
+                    rows={2}
+                    placeholder="e.g. Write a blog post about AI in 2025…"
+                    value={dryRunPrompt}
+                    onChange={e => setDryRunPrompt(e.target.value)}
                   />
                 </div>
-
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                   <button
-                    className="btn btn-primary"
-                    style={{ padding: '8px 20px' }}
-                    onClick={runTask}
-                    disabled={running || form.entries.length === 0}
+                    className="btn btn-ghost"
+                    style={{ padding: '8px 18px' }}
+                    onClick={runDryRun}
+                    disabled={dryRunning || form.entries.length === 0}
                   >
-                    {running
-                      ? <><Loader2 width={14} height={14} className="spin" /> Running {form.entries.length} steps…</>
-                      : <><Play width={14} height={14} /> Run Task</>
+                    {dryRunning
+                      ? <><Loader2 width={14} height={14} className="spin" /> Running test…</>
+                      : <><FlaskConical width={14} height={14} /> Run Test</>
                     }
                   </button>
-                  {runResult && (
-                    <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => setRunResult(null)}>
-                      <RotateCcw width={12} height={12} /> Clear
-                    </button>
+                  {dryRunResult && (
+                    <button className="btn-icon" style={{ fontSize: 12, color: 'var(--text-muted)' }} onClick={() => setDryRunResult(null)}>✕ Clear</button>
                   )}
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                    {form.entries.length} step{form.entries.length !== 1 ? 's' : ''}
+                  </span>
                 </div>
 
-                {/* Run result */}
-                {runResult && (
-                  <div style={{ marginTop: 20 }}>
+                {/* Dry run result */}
+                {dryRunResult && (
+                  <div style={{ marginTop: 16 }}>
                     <div style={{
                       display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10,
                       fontSize: 13, fontWeight: 600,
-                      color: runResult.success ? 'var(--green)' : 'var(--red)',
+                      color: dryRunResult.success ? 'var(--green)' : 'var(--red)',
                     }}>
-                      {runResult.success
-                        ? <><CheckCircle2 width={15} height={15} /> Completed {runResult.output.steps} step{runResult.output.steps !== 1 ? 's' : ''}</>
-                        : <><XCircle width={15} height={15} /> Failed — {runResult.error}</>
+                      {dryRunResult.success
+                        ? <><CheckCircle2 width={14} height={14} /> Test passed — {dryRunResult.output.steps} step{dryRunResult.output.steps !== 1 ? 's' : ''} executed</>
+                        : <><XCircle width={14} height={14} /> Test failed — {dryRunResult.error}</>
                       }
-                      {runResult.tokenUsage && (
-                        <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400, marginLeft: 'auto' }}>
-                          {(runResult.tokenUsage.inputTokens + runResult.tokenUsage.outputTokens).toLocaleString()} tokens
-                        </span>
-                      )}
                     </div>
-
-                    {runResult.output.text && (
-                      <RunOutputAccordion text={runResult.output.text} />
+                    {dryRunResult.output.text && (
+                      <div style={{
+                        background: 'var(--bg-base)', border: '1px solid var(--border)', borderRadius: 8,
+                        padding: '12px 14px', fontSize: 12, color: 'var(--text-primary)',
+                        lineHeight: 1.7, whiteSpace: 'pre-wrap', maxHeight: 300, overflowY: 'auto',
+                      }}>
+                        {dryRunResult.output.text}
+                      </div>
                     )}
                   </div>
                 )}
@@ -611,74 +590,6 @@ export default function TasksPage() {
           </>
         )}
       </div>
-    </div>
-  );
-}
-
-// ─── Run output accordion — splits steps by separator ─────────────────────────
-function RunOutputAccordion({ text }: { text: string }) {
-  const sections = text.split(/\n---\n/).filter(Boolean);
-  const [openIdx, setOpenIdx] = useState<number>(sections.length - 1);
-
-  if (sections.length === 0) return null;
-
-  // Single section — just show it
-  if (sections.length === 1) {
-    return (
-      <div style={{
-        background: 'var(--bg-surface)', borderRadius: 'var(--radius)',
-        border: '1px solid var(--border)', padding: '14px 16px',
-        fontSize: 13, color: 'var(--text-primary)', lineHeight: 1.7,
-        whiteSpace: 'pre-wrap', maxHeight: 400, overflowY: 'auto',
-      }}>
-        {text.trim()}
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      {sections.map((section, i) => {
-        const headline = section.split('\n')[0].replace(/^#+\s*/, '').trim();
-        const body     = section.split('\n').slice(1).join('\n').trim();
-        const isOpen   = openIdx === i;
-
-        return (
-          <div key={i} style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
-            <button
-              type="button"
-              onClick={() => setOpenIdx(isOpen ? -1 : i)}
-              style={{
-                width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                background: 'var(--bg-elevated)', border: 'none', padding: '10px 14px',
-                cursor: 'pointer', color: 'var(--text-primary)',
-              }}
-            >
-              <span style={{ fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{
-                  width: 20, height: 20, borderRadius: '50%', background: 'var(--accent)',
-                  color: '#fff', fontSize: 10, fontWeight: 700,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                }}>
-                  {i + 1}
-                </span>
-                {headline || `Step ${i + 1}`}
-              </span>
-              <ChevronDown width={14} height={14} style={{ transform: isOpen ? 'rotate(0)' : 'rotate(-90deg)', transition: 'transform 0.18s', flexShrink: 0 }} />
-            </button>
-
-            {isOpen && body && (
-              <div style={{
-                padding: '12px 14px', fontSize: 13, color: 'var(--text-primary)',
-                lineHeight: 1.7, whiteSpace: 'pre-wrap', maxHeight: 340, overflowY: 'auto',
-                background: 'var(--bg-surface)',
-              }}>
-                {body}
-              </div>
-            )}
-          </div>
-        );
-      })}
     </div>
   );
 }

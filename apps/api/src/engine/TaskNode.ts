@@ -55,13 +55,21 @@ export class TaskNode implements IExecutableNode {
       agents = agentsRes.rows;
     }
 
-    // ── 2. Create parent task run ─────────────────────────────────────────────
-    const taskRunId = ctx.inputData.runId as string | undefined ?? uuidv4();
-    if (!ctx.inputData.runId) {
+    // ── 2. Create/Update parent task run ─────────────────────────────────────
+    const isDryRun = ctx.inputData.dry_run === true;
+    const taskRunId = (ctx.inputData.runId as string | undefined) ?? uuidv4();
+    if (!isDryRun) {
+        // We use ON CONFLICT DO UPDATE because the route often creates the record first
+        // to respond immediately with a matching ID for the frontend to poll.
+        // We'll update it with more detailed info (like agent count) here.
         await db.query(
         `INSERT INTO execution_runs
             (id, node_type, node_id, parent_run_id, status, input_data, started_at)
-        VALUES ($1, 'task', $2, $3, 'running', $4, NOW())`,
+        VALUES ($1, 'task', $2, $3, 'running', $4, NOW())
+        ON CONFLICT (id) DO UPDATE SET 
+            input_data = $4,
+            status = EXCLUDED.status,
+            started_at = COALESCE(execution_runs.started_at, EXCLUDED.started_at)`,
         [taskRunId, taskId, ctx.parentRunId ?? null, JSON.stringify({ taskId, initialPrompt, agents: agents.length })]
         );
     }
@@ -151,6 +159,13 @@ Rules:
 
     try {
         for (let turn = 0; turn < MAX_TURNS; turn++) {
+            // Check for kill signal before each LLM call
+            if (ctx.abortSignal?.aborted) {
+                console.log(`[TaskNode] Task "${task.name}" was killed at turn ${turn}.`);
+                finalOutput += '\n\n[Task was killed by user]';
+                break;
+            }
+
             const response = await llm.chat(messages, dynamicTools, { maxTokens: 4096 });
             
             if (response.inputTokens) {
@@ -178,6 +193,7 @@ Rules:
             const toolResultsMsgs: ChatMessage[] = [];
             
             for (const tc of response.toolCalls) {
+                if (ctx.abortSignal?.aborted) break; // React immediately to kills
                 allToolsUsed.push(tc.name);
                 console.log(`[TaskNode] Delegating: ${tc.name}`);
                 
@@ -200,19 +216,28 @@ Rules:
                     const instructions = tc.arguments.instructions as string;
                     
                     const agentRunId = uuidv4();
-                    await db.query(
-                        `INSERT INTO execution_runs
-                            (id, node_type, node_id, parent_run_id, status, input_data, started_at)
-                        VALUES ($1, 'agent', $2, $3, 'running', $4, NOW())`,
-                        [agentRunId, toolDef._agentId, taskRunId, JSON.stringify({ prompt: instructions })]
-                    );
+                    // Only persist to DB when NOT a dry run
+                    if (!isDryRun) {
+                        await db.query(
+                            `INSERT INTO execution_runs
+                                (id, node_type, node_id, parent_run_id, status, input_data, started_at)
+                            VALUES ($1, 'agent', $2, $3, 'running', $4, NOW())`,
+                            [agentRunId, toolDef._agentId, taskRunId, JSON.stringify({ prompt: instructions })]
+                        );
+                    }
 
                     const agentCtx: ExecutionContext = {
-                        inputData: { agentId: toolDef._agentId, runId: agentRunId, prompt: instructions },
+                        inputData: { 
+                            agentId: toolDef._agentId, 
+                            runId: isDryRun ? undefined : agentRunId, 
+                            prompt: instructions,
+                            dry_run: isDryRun 
+                        },
                         currentDepth: ctx.currentDepth + 1,
                         totalSteps: 1,
                         maxDepth: ctx.maxDepth,
                         parentRunId: taskRunId,
+                        abortSignal: ctx.abortSignal,
                     };
 
                     const agentNode = new AgentNode();
@@ -223,13 +248,15 @@ Rules:
                         totalTokens.outputTokens += result.tokenUsage.outputTokens;
                     }
 
-                    // Update child run record
-                    await db.query(
-                        `UPDATE execution_runs
-                        SET status = $1, ended_at = NOW(), output_data = $2, error_message = $3
-                        WHERE id = $4`,
-                        [result.success ? 'completed' : 'failed', JSON.stringify(result), result.error ?? null, agentRunId]
-                    );
+                    // Update child run record (skip in dry run)
+                    if (!isDryRun) {
+                        await db.query(
+                            `UPDATE execution_runs
+                            SET status = $1, ended_at = NOW(), output_data = $2, error_message = $3
+                            WHERE id = $4`,
+                            [result.success ? 'completed' : 'failed', JSON.stringify(result), result.error ?? null, agentRunId]
+                        );
+                    }
 
                     toolOutput = result.success ? result.output?.text : { error: result.error };
                 }
@@ -255,12 +282,14 @@ Rules:
             summary: finalOutput.substring(0, 1000)
         };
 
-        await db.query(
-            `UPDATE execution_runs
-            SET status = 'completed', ended_at = NOW(), output_data = $1
-            WHERE id = $2`,
-            [JSON.stringify(outputPayload), taskRunId]
-        );
+        if (!isDryRun) {
+            await db.query(
+                `UPDATE execution_runs
+                SET status = 'completed', ended_at = NOW(), output_data = $1
+                WHERE id = $2`,
+                [JSON.stringify(outputPayload), taskRunId]
+            );
+        }
 
         return {
             success: true,
@@ -271,10 +300,12 @@ Rules:
 
     } catch (err: any) {
         console.error('[TaskNode Error]', err);
-        await db.query(
-            `UPDATE execution_runs SET status = 'failed', ended_at = NOW(), error_message = $1 WHERE id = $2`,
-            [err.message, taskRunId]
-        );
+        if (!isDryRun) {
+            await db.query(
+                `UPDATE execution_runs SET status = 'failed', ended_at = NOW(), error_message = $1 WHERE id = $2`,
+                [err.message, taskRunId]
+            );
+        }
         return { success: false, output: { text: '' }, error: err.message };
     }
   }

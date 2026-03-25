@@ -8,7 +8,9 @@ import { config } from './config.js';
 import agentsRouter      from './routes/agents.js';
 import toolsRouter       from './routes/tools.js';
 import tasksRouter       from './routes/tasks.js';
+import taskRunsRouter    from './routes/task-runs.js';
 import llmSettingsRouter from './routes/llm-settings.js';
+import fsRouter          from './routes/fs.js';
 import { ToolRegistry }  from './engine/ToolRegistry.js';
 
 const app = express();
@@ -28,7 +30,9 @@ app.get('/health', (_req, res) => res.json({ status: 'ok', ts: new Date().toISOS
 app.use('/api/agents',       agentsRouter);
 app.use('/api/tools',        toolsRouter);
 app.use('/api/tasks',        tasksRouter);
+app.use('/api/task-runs',    taskRunsRouter);
 app.use('/api/llm-settings', llmSettingsRouter);
+app.use('/api/fs',           fsRouter);
 // removed proxy usage
 
 // ─── 404 ──────────────────────────────────────────────────────────────────────
@@ -40,8 +44,13 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ error: err.message ?? 'Internal server error' });
 });
 
+import { reconcileRuns } from './routes/task-runs.js';
+
 // ─── Start ────────────────────────────────────────────────────────────────────
-ToolRegistry.seed()
+Promise.all([
+  ToolRegistry.seed(),
+  reconcileRuns(),
+])
   .then(() => {
     app.listen(config.port, () => {
       console.log(`🚀  API server running on http://localhost:${config.port}`);
@@ -49,7 +58,7 @@ ToolRegistry.seed()
     });
   })
   .catch(err => {
-    console.error('[Startup] ToolRegistry.seed() failed:', err);
+    console.error('[Startup] Failed:', err);
     process.exit(1);
   });
 
