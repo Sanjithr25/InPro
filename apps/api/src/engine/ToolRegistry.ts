@@ -20,6 +20,7 @@ import { promisify } from 'node:util';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import db from '../db/client.js';
+import { tavily } from '@tavily/core';
 
 const execAsync = promisify(exec);
 
@@ -40,67 +41,62 @@ export interface ToolDefinitionEntry {
 
 // ─── Built-in Executors ────────────────────────────────────────────────────────
 
-const execWebSearch: Executor = async (args) => {
+const execWebSearch: Executor = async (args, config) => {
   const query      = args.query as string;
   const numResults = Math.min(Math.max((args.num_results as number) ?? 5, 1), 10);
-  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_redirect=1&no_html=1`;
+  
+  // Extract API key from tool DB config or environment
+  const apiKey = (config.tavily_api_key as string) || process.env.TAVILY_API_KEY;
 
-  let res: Response;
+  if (!apiKey) {
+    return {
+      error: 'terminal',
+      message: 'Tavily API key is not configured. Add "tavily_api_key" to the web_search tool config in the UI, or set TAVILY_API_KEY in the .env file.',
+      query,
+    };
+  }
+
   try {
-    res = await fetch(url, { headers: { 'User-Agent': 'InPro-Agent/1.0' } });
+    const tvly = tavily({ apiKey });
+    const response = await tvly.search(query, {
+      maxResults: numResults,
+      searchDepth: 'advanced',
+      includeAnswer: true
+    });
+
+    const results: string[] = [];
+    if (response.answer) {
+      results.push(`Answer: ${response.answer}`);
+    }
+
+    if (response.results && response.results.length > 0) {
+      const snippets = response.results.map((r: any) => `[Source: ${r.url}]\n${r.content}`);
+      results.push(...snippets);
+    }
+
+    if (results.length === 0) {
+      return {
+        error: 'terminal',
+        query,
+        results: [],
+        message: 'No results found for this query via Tavily. Proceed using training data if possible.',
+      };
+    }
+
+    return { 
+      query, 
+      answer: response.answer, 
+      results: results.slice(0, numResults + 1), 
+      result_count: results.length 
+    };
+
   } catch (e: any) {
-    // Network-level failure — terminal, the search API is unreachable
     return {
       error: 'terminal',
-      message: 'Web search is unavailable (network error). Answer from your training data instead.',
+      message: `Tavily Search API failed: ${e.message}`,
       query,
     };
   }
-
-  if (!res.ok) {
-    return {
-      error: 'terminal',
-      message: `Web search API returned HTTP ${res.status}. Do not retry — answer from training data.`,
-      query,
-    };
-  }
-
-  // Safe parse — DuckDuckGo sometimes returns an empty body
-  const raw  = await res.text();
-  let data: Record<string, unknown>;
-  try {
-    data = JSON.parse(raw);
-  } catch {
-    return {
-      error: 'terminal',
-      message: 'Web search returned no usable data. Do not retry — answer from training data instead.',
-      query,
-    };
-  }
-
-  const results: string[] = [];
-  if (data.AbstractText) results.push(`Summary: ${data.AbstractText}`);
-  if (data.Answer)       results.push(`Answer: ${data.Answer}`);
-
-  const related = ((data.RelatedTopics as any[]) ?? [])
-    .slice(0, numResults)
-    .map((r: any) => r.Text ?? r.Result ?? '')
-    .filter(Boolean);
-  results.push(...related);
-
-  if (results.length === 0) {
-    return {
-      error: 'terminal',
-      query,
-      results: [],
-      message:
-        'No results found for this query. Do not retry with a rephrased query — ' +
-        'the DuckDuckGo Instant Answer API has limited coverage. ' +
-        'Answer from your training data or tell the user you cannot find the information.',
-    };
-  }
-
-  return { query, results: results.slice(0, numResults), result_count: results.length };
 };
 
 const execHttpRequest: Executor = async (args, config) => {
@@ -245,8 +241,8 @@ const BUILT_IN_TOOLS: ToolDefinitionEntry[] = [
   {
     name: 'web_search',
     description:
-      'Use when you need current facts, news, or information not in your training data. ' +
-      'Returns ranked relevant snippets. Do NOT use for URL fetching — use http_request for that.',
+      'Use when you need current facts, news, or deep information not in your training data. ' +
+      'Powered by Tavily Search API. Returns ranked relevant snippets and deep answers. Do NOT use for URL fetching — use http_request for that.',
     schema: {
       type: 'object',
       properties: {
@@ -255,7 +251,7 @@ const BUILT_IN_TOOLS: ToolDefinitionEntry[] = [
       },
       required: ['query'],
     },
-    defaultConfig: { provider: 'duckduckgo' },
+    defaultConfig: { tavily_api_key: '' },
     executor: execWebSearch,
   },
   {

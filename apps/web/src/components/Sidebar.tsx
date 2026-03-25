@@ -1,9 +1,10 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
-  Bot, Wrench, ClipboardList, CalendarClock, History, Settings2
+  Bot, Wrench, ClipboardList, CalendarClock, History, Settings2, Sun, Moon
 } from 'lucide-react';
 
 const NAV = [
@@ -16,6 +17,27 @@ const NAV = [
 
 export default function Sidebar() {
   const path = usePathname();
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+
+  useEffect(() => {
+    const stored = localStorage.getItem('theme');
+    if (stored === 'light' || (!stored && window.matchMedia('(prefers-color-scheme: light)').matches)) {
+      setTheme('light');
+      document.body.classList.add('light');
+    }
+  }, []);
+
+  const toggleTheme = () => {
+    const newTheme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(newTheme);
+    localStorage.setItem('theme', newTheme);
+    if (newTheme === 'light') {
+      document.body.classList.add('light');
+    } else {
+      document.body.classList.remove('light');
+    }
+  };
+
   return (
     <nav className="sidebar">
       <div className="sidebar-logo">
@@ -37,7 +59,15 @@ export default function Sidebar() {
         ))}
       </div>
 
-      <div style={{ marginTop: 'auto', padding: '0 8px' }}>
+      <div style={{ marginTop: 'auto', padding: '0 8px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <button
+          onClick={toggleTheme}
+          className="nav-item"
+          style={{ width: '100%', background: 'transparent', border: 'none', textAlign: 'left' }}
+        >
+          {theme === 'dark' ? <Sun width={16} height={16} /> : <Moon width={16} height={16} />}
+          {theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
+        </button>
         <Link
           href="/settings"
           className={`nav-item${path?.startsWith('/settings') ? ' active' : ''}`}
