@@ -2,7 +2,7 @@
 
 **Purpose:** This file is the central source of truth for the AI Workflow Platform project. All engineers and AI agents working on this codebase must adhere to the architecture, database schema, and abstractions defined here.
 
-**Last updated:** 2026-03-24
+**Last updated:** 2026-03-25
 
 ---
 
@@ -18,7 +18,7 @@ A web application for building, configuring, and orchestrating AI agents, tools,
 | **Backend** | Node.js + Express (TypeScript, ESM) |
 | **Database** | PostgreSQL via Supabase (transaction pooler) |
 | **LLM** | Ollama (local, `llama3.2`) — OpenAI-compatible API at `localhost:11434/v1` |
-| **LLM SDKs** | `openai` npm package (for Ollama + OpenAI), `@anthropic-ai/sdk` (for Anthropic) |
+| **LLM SDKs** | `openai` npm package (for Ollama + OpenAI + Groq), `@anthropic-ai/sdk` (for Anthropic) |
 | **Queue (planned)** | Redis + BullMQ (Phase 4) |
 | **Vector DB (planned)** | Milvus (Phase 5+) |
 
@@ -38,16 +38,16 @@ execute(context: ExecutionContext): Promise<ExecutionResult>
 
 | Level | Class | Role |
 |---|---|---|
-| 0 | `LLMProviderFactory` | Builds a `ChatProvider` for the configured backend (Ollama/OpenAI/Anthropic) |
+| 0 | `LLMProviderFactory` | Builds a `ChatProvider` for the configured backend (Ollama/OpenAI/Anthropic/Groq) |
 | 1 | `AgentNode` | Stateless. Fetches agent definition + tools from DB, resolves provider via factory, runs agentic tool-use loop |
-| 2 | `TaskNode` *(planned Phase 3)* | Chains multiple `AgentNode`s linearly; passes outputs as inputs |
+| 2 | `TaskNode` ✅ | Chains multiple `AgentNode`s linearly; passes outputs as inputs to next step |
 | 3 | `ScheduleNode` *(planned Phase 4)* | Root trigger (cron/webhook/manual); runs assigned `TaskNode` sequence |
 
 ### `ExecutionContext`
 Passed explicitly to every `.execute()` call. Must be **strictly JSON-serializable** (no DB connections, no class instances — it will cross the Redis queue boundary in Phase 4):
 ```typescript
 {
-  inputData: Record<string, unknown>  // agentId, runId, prompt, …
+  inputData: Record<string, unknown>  // agentId/taskId, runId, prompt, …
   currentDepth: number                // circuit breaker
   totalSteps: number
   maxDepth: number
@@ -65,41 +65,68 @@ Passed explicitly to every `.execute()` call. Must be **strictly JSON-serializab
 4. Run tool-use loop (up to `MAX_TURNS = 15`):
    - Call `llm.chat(messages, tools)`
    - If `stopReason === 'end_turn'` → done
-   - If tool calls → execute via `ToolRegistry`, append results as user messages, loop
+   - If tool calls → execute via `ToolRegistry.execute(name, args)`, append results as user messages, loop
 5. Persist result to `execution_runs`
+
+### TaskNode Linear Orchestrator (`src/engine/TaskNode.ts`) ✅ NEW
+1. Load task from `tasks` table — reads `workflow_definition` (ordered step array)
+2. Create parent `execution_run` record (`node_type='task'`)
+3. For each step in order:
+   - Create child `execution_run` (`node_type='agent'`, `parent_run_id=taskRunId`)
+   - Build step prompt — injects previous step's output as context
+   - Run `AgentNode.execute()` with step's `agentId`
+   - On failure → mark task failed, stop chain
+   - On success → collect output, pass to next step
+4. Mark task `completed` with full chain output
+
+**Step prompt construction:**
+- Step 1: receives the task description + initial user prompt
+- Step N+1: receives the task description + previous step's full text output
+- This creates a natural "research → summarize → report" chain
 
 ### `LLMProviderFactory` (`src/engine/LLMProviderFactory.ts`)
 Factory builds a `ChatProvider` from a config object (sourced from `llm_settings` DB row):
 
 | Provider | Implementation | Notes |
 |---|---|---|
-| `ollama` | `openai` npm package, `baseURL: localhost:11434/v1` | No API key needed |
-| `openai` | `openai` npm package, `baseURL` from `llm_settings.base_url` | Requires `api_key` |
+| `ollama` / `llama-local` | `openai` npm package, `baseURL: localhost:11434/v1` | No API key needed |
+| `openai` | `openai` npm package | Requires `api_key` |
+| `groq` | `openai` npm package, `baseURL: api.groq.com/openai/v1` | Requires `api_key` |
 | `anthropic` | `@anthropic-ai/sdk` | Requires `api_key`; handles `system` + `tool_use` blocks natively |
+| `gemini` | `openai` npm package, `baseURL: generativelanguage.googleapis.com/v1beta/openai` | Requires `api_key` |
 
 All providers adhere to the `ChatProvider` interface:
 ```typescript
 chat(messages, tools?, options?): Promise<ChatResponse>
+chatStream(messages, tools?, options?): AsyncGenerator<StreamChunk>
 ```
 
-### `ToolRegistry` (`src/engine/ToolRegistry.ts`)
-- Routes tool calls from agents to their implementation.
-- **Priority 1: Built-in Tools** — matched by name (e.g., `web_search`, `calculator`).
-- **Priority 2: Custom HTTP Tools** — if the tool config has an `endpoint` or `url`, the registry sends a POST request with the tool's expected JSON payload.
-- **Priority 3: Placeholder** — returns a structured "not implemented" message if no handler is found.
+### `ToolRegistry` (`src/engine/ToolRegistry.ts`) ✅ REWRITTEN
+Single source of truth for all tool definitions and execution. **No `builtins.ts` dependency.**
 
-### Built-in Tool Catalog (`src/engine/builtins.ts`)
-The system ships with the following built-in tools:
+- All 7 built-in tool definitions and executors are defined **inline** in `ToolRegistry.ts`
+- `ToolRegistry.seed()` upserts built-ins into the DB on server startup (`ON CONFLICT (name) DO NOTHING`)
+- `ToolRegistry.execute(toolName, args, agentId?)` — DB-driven execution:
+  1. Loads tool row (config, is_enabled) from the `tools` DB table
+  2. If name matches a built-in executor → runs it (with DB config)
+  3. If config has `endpoint`/`url` → HTTP dispatch (POST args as JSON)
+  4. Otherwise → structured `terminal` error
 
-| Tool | Category | Icon | Tagline |
-|---|---|---|---|
-| `web_search` | Search | 🔍 | Search the web with DuckDuckGo (no key needed) |
-| `http_request` | Network | 🌐 | Make HTTP requests to any API endpoint |
-| `calculator` | Math & Data | 🧮 | Evaluate mathematical expressions safely |
-| `read_file` | Files | 📄 | Read file contents from disk |
-| `write_file` | Files | 💾 | Write or create a file on disk |
-| `run_command` | System | 💻 | Execute shell commands (caution!) |
-| `get_datetime` | System | 🕒 | Get current date/time in various formats |
+**Built-in tools (seeded automatically):**
+
+| Tool | Description |
+|---|---|
+| `web_search` | DuckDuckGo Instant Answers — returns `terminal` error on empty/failed responses (prevents model retry loop) |
+| `http_request` | Generic HTTP client — GET/POST/PUT/PATCH/DELETE with timeout |
+| `calculator` | Safe JS math expression evaluator — allowlist-based |
+| `read_file` | Read file contents with truncation support (`max_chars`) |
+| `write_file` | Write/overwrite a file (idempotent) |
+| `run_command` | Shell command executor — supports `allowed_commands` allowlist |
+| `get_datetime` | Current timestamp in iso/unix/human/utc format |
+
+**Error design:** All tool outputs use `error: 'recoverable' | 'terminal'` + `message` fields so the model can distinguish retryable from fatal failures.
+
+> ⚠️ `builtins.ts` is now an empty stub — do not add code there. ToolRegistry.ts is the only source.
 
 ---
 
@@ -115,14 +142,12 @@ Stores provider configurations. One row per provider. `is_default = true` is use
 | Column | Type | Notes |
 |---|---|---|
 | `id` | UUID PK | |
-| `provider` | TEXT | `ollama`, `openai`, `anthropic`, `gemini` |
+| `provider` | TEXT | `llama-local`, `ollama`, `openai`, `anthropic`, `gemini`, `groq`, `custom` |
 | `api_key` | TEXT | Empty string for Ollama |
 | `base_url` | TEXT | e.g. `http://localhost:11434/v1` |
-| `model_name` | TEXT | e.g. `llama3.2` |
+| `model_name` | TEXT | e.g. `llama3.2`, `llama-3.3-70b-versatile` |
 | `is_default` | BOOLEAN | Only one row can be `true` (partial unique index) |
 | `extra_params` | JSONB | Future use |
-
-**Active default:** `ollama` / `llama3.2` / `http://localhost:11434/v1`
 
 #### `agents`
 | Column | Type | Notes |
@@ -140,22 +165,23 @@ Stores provider configurations. One row per provider. `is_default = true` is use
 | Column | Type | Notes |
 |---|---|---|
 | `id` | UUID PK | |
-| `name` | TEXT UNIQUE | |
-| `description` | TEXT | Shown to the LLM |
+| `name` | TEXT UNIQUE | Name must match built-in executor name for native execution |
+| `description` | TEXT | Shown to the LLM as the tool's decision boundary |
 | `schema` | JSONB | JSON Schema for the tool's input (passed to LLM as function spec) |
-| `config` | JSONB | API keys / integration config (should be encrypted in Phase 3+) |
+| `config` | JSONB | Key-value config (API keys, endpoints, timeouts, etc.) |
 | `is_enabled` | BOOLEAN | Only enabled tools are offered to agents |
 
 #### `agent_tools`
 Join table — `(agent_id, tool_id)` composite PK.
 
-#### `tasks`
+#### `tasks` ✅
 | Column | Type | Notes |
 |---|---|---|
 | `id` | UUID PK | |
 | `name` | TEXT UNIQUE | |
-| `description` | TEXT | |
-| `workflow_definition` | JSONB | Ordered array of `{ agentId, stepName, description }` |
+| `description` | TEXT | Also used as context for LLM workflow generation |
+| `workflow_definition` | JSONB | `Array<{ agentId, stepName, description, promptOverride? }>` |
+| `created_at` / `updated_at` | TIMESTAMPTZ | |
 
 #### `schedules`
 | Column | Type | Notes |
@@ -166,11 +192,11 @@ Join table — `(agent_id, tool_id)` composite PK.
 | `trigger_config` | JSONB | e.g. `{ cron: "0 9 * * *" }` |
 | `is_enabled` | BOOLEAN | |
 
-#### `schedule_tasks` 
+#### `schedule_tasks`
 Join table with `order_index` for execution ordering.
 
 #### `execution_runs` (Polymorphic Logger)
-Single table recording every execution at every level.
+Single table recording every execution at every level. Parent-child tree: `schedule → task → agent`.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -198,22 +224,37 @@ All routes are under the Express API at `http://localhost:3001`.
 | POST | `/api/agents` | Create agent `{ name, skill, agent_group, llm_provider_id?, tool_ids[] }` |
 | PUT | `/api/agents/:id` | Update agent |
 | DELETE | `/api/agents/:id` | Delete agent |
-| POST | `/api/agents/:id/run` | Dry run `{ prompt }` — runs agentic loop, returns result synchronously |
+| POST | `/api/agents/:id/run` | Sync dry run `{ prompt }` — returns result |
+| POST | `/api/agents/:id/stream` | SSE streaming run — emits `start`, `text`, `tool_start`, `tool_result`, `done`, `error` events |
 
 ### `/api/tools`
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/tools` | List all tools |
-| POST | `/api/tools` | Create tool |
+| GET | `/api/tools` | List all tools (annotated with `is_builtin` flag) |
+| GET | `/api/tools/:id` | Single tool (full schema + config) |
+| POST | `/api/tools` | Create custom tool |
 | PUT | `/api/tools/:id` | Update tool |
 | DELETE | `/api/tools/:id` | Delete tool |
+
+### `/api/tasks` ✅ NEW
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/tasks` | List tasks with `step_count`, `last_run_status`, `last_run_at` |
+| GET | `/api/tasks/:id` | Single task (full `workflow_definition`) |
+| POST | `/api/tasks` | Create task `{ name, description, workflow_definition[] }` |
+| PUT | `/api/tasks/:id` | Update task |
+| DELETE | `/api/tasks/:id` | Delete task |
+| POST | `/api/tasks/:id/run` | Execute task `{ prompt? }` — runs all steps sync, returns full result |
+| POST | `/api/tasks/generate-workflow` | LLM generates steps `{ description, agentIds[] }` → `{ steps[] }` |
 
 ### `/api/llm-settings`
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/llm-settings` | List all provider configs (masks api_key → `has_key: boolean`) |
+| GET | `/api/llm-settings/:id` | Single provider |
 | PUT | `/api/llm-settings/:id` | Update provider config, model, base_url, default flag |
 | POST | `/api/llm-settings` | Add new provider row |
+| DELETE | `/api/llm-settings/:id` | Remove provider (clears agent references) |
 
 ---
 
@@ -221,23 +262,36 @@ All routes are under the Express API at `http://localhost:3001`.
 
 | Page | Route | Status |
 |---|---|---|
-| Agents | `/agents` | ✅ Full CRUD + Dry Run |
-| Tools | /tools | ✅ Full (w/ Library) |
-| Tasks | `/tasks` | 🔲 Stub |
-| Scheduler | `/scheduler` | 🔲 Stub |
-| Run History | `/history` | 🔲 Stub |
+| Agents | `/agents` | ✅ Full CRUD + Dry Run + Streaming |
+| Tools | `/tools` | ✅ Full CRUD — unified list, built-ins pre-seeded |
+| Tasks | `/tasks` | ✅ Full CRUD + AI Workflow Generator + Run |
+| Scheduler | `/scheduler` | 🔲 Stub — Phase 4 |
+| Run History | `/history` | 🔲 Stub — Phase 5 |
 | LLM Settings | `/settings` | ✅ Full CRUD |
 
-### Agents Page (`/agents`) — current state
-- **Left sidebar**: lists all agents grouped by `agent_group`; search filters by name or group
-- **Identity card**: `name`, `agent_group` (for sidebar grouping), `llm_provider_id` (dropdown showing all configured providers with default clearly labeled)
-- **Skill card**: textarea + "Upload .md file" button (populates textarea); Clear button
+### Agents Page (`/agents`)
+- Left sidebar: lists all agents grouped by `agent_group`; search filters by name or group
+- **Identity card**: `name`, `agent_group`, `llm_provider_id` dropdown
+- **Skill card**: textarea + "Upload .md file" button; Clear button
 - **Tools card**: chip-select toggles for all enabled tools
-- **Dry Run card**: appears only for saved agents; runs prompt and shows output + token/latency stats
+- **Dry Run card**: appears only for saved agents; prompt → streaming output + token/latency stats
 
-### Settings Page (`/settings`) — current state
-- Cards for each configured LLM provider (Ollama, OpenAI, Anthropic, Gemini)
-- Groq has been removed entirely
+### Tools Page (`/tools`)
+- Unified list — all DB tools (built-ins + custom) in one sidebar list
+- `BUILT-IN` badge on tools that map to a native executor
+- Built-ins are seeded automatically on server startup — no install flow
+- Click to configure (edit config, schema, enable/disable), `+` to create new
+
+### Tasks Page (`/tasks`) ✅ NEW
+- **Sidebar**: task list with last-run status badge (`completed`/`failed`/`running`), step count, time since last run
+- **Task Identity card**: name + description (description used for LLM generation)
+- **AI Workflow Generator card**: agent chip-select → LLM plans steps from description
+- **Workflow Steps editor**: drag-to-reorder, add/remove, per-step agent selector + description
+- **Agent flow preview**: `Agent A → Agent B → Agent C` visualization
+- **Run Task card**: optional initial prompt → executes all steps → per-step accordion output
+
+### Settings Page (`/settings`)
+- Cards per LLM provider (Ollama, Groq, OpenAI, Anthropic, Gemini, Custom)
 - Fields: API Key (masked), Base URL, Model Name, Set as Default
 - Add New Provider button
 
@@ -252,39 +306,39 @@ InPro/
 ├── apps/
 │   ├── api/                      # Node.js/Express backend (TypeScript, ESM)
 │   │   ├── package.json
-│   │   ├── scripts/
-│   │   │   └── alter_agent.ts    # One-off DB migration scripts
 │   │   └── src/
-│   │       ├── config.ts         # Typed env config (LLM_PROVIDER=ollama, LLM_MODEL=llama3.2)
-│   │       ├── index.ts          # Express entry + route mounting
-│   │       ├── types.ts          # ExecutionContext, ExecutionResult, LLMProviderName, DB row types
+│   │       ├── config.ts         # Typed env config
+│   │       ├── index.ts          # Express entry + route mounting + ToolRegistry.seed()
+│   │       ├── types.ts          # ExecutionContext, ExecutionResult, ToolDefinition, etc.
 │   │       ├── db/
 │   │       │   ├── client.ts     # pg Pool (Supabase SSL)
 │   │       │   ├── migrate.ts    # Runs schema.sql
-│   │       │   ├── seed.ts       # Seeds Ollama as default llm_settings
+│   │       │   ├── seed.ts       # Seeds default llm_settings row
 │   │       │   └── schema.sql    # Full PostgreSQL schema
 │   │       ├── engine/
-│   │       │   ├── AgentNode.ts           # Agentic loop (no subprocess)
-│   │       │   ├── LLMProviderFactory.ts  # Factory: ollama|openai|anthropic
-│   │       │   └── ToolRegistry.ts        # Built-ins + Custom HTTP discovery
-│   │       └── builtins.ts            # Implementations: web_search, calc, etc.
+│   │       │   ├── AgentNode.ts          # Single-agent agentic loop
+│   │       │   ├── TaskNode.ts           # ✅ Multi-agent linear orchestrator
+│   │       │   ├── LLMProviderFactory.ts # Provider abstraction (Ollama/OpenAI/Anthropic/Groq/Gemini)
+│   │       │   ├── ToolRegistry.ts       # Built-in definitions + DB-driven execution
+│   │       │   └── builtins.ts           # ⚠️ EMPTY STUB — do not use
 │   │       └── routes/
-│   │           ├── agents.ts       # CRUD + /run
-│   │           ├── tools.ts        # CRUD
-│   │           └── llm-settings.ts # CRUD + default mgmt
+│   │           ├── agents.ts       # CRUD + /run + /stream
+│   │           ├── tools.ts        # CRUD (built-ins pre-seeded, no install endpoint)
+│   │           ├── tasks.ts        # ✅ CRUD + /run + /generate-workflow
+│   │           └── llm-settings.ts # CRUD + default management
 │   └── web/                       # Next.js 15 frontend (App Router)
 │       └── src/
 │           ├── app/
 │           │   ├── layout.tsx
-│           │   ├── agents/page.tsx   # ✅ Full
-│           │   ├── settings/page.tsx # ✅ Full
-│           │   ├── tools/page.tsx    # ✅ Full (w/ Library)
-│           │   ├── tasks/page.tsx    # 🔲 Nextup
-│           │   ├── scheduler/page.tsx
-│           │   └── history/page.tsx
+│           │   ├── agents/page.tsx    # ✅ Full
+│           │   ├── settings/page.tsx  # ✅ Full
+│           │   ├── tools/page.tsx     # ✅ Full
+│           │   ├── tasks/page.tsx     # ✅ Full (Phase 3)
+│           │   ├── scheduler/page.tsx # 🔲 Stub
+│           │   └── history/page.tsx   # 🔲 Stub
 │           ├── components/Sidebar.tsx
-│           └── lib/api.ts            # AgentRow, ToolRow, LlmSettingRow + fetch wrappers
-└── packages/shared/src/types.ts     # Shared types
+│           └── lib/api.ts            # AgentRow, ToolRow, TaskRow, WorkflowStep + fetch wrappers
+└── packages/shared/src/types.ts      # Shared types
 ```
 
 ---
@@ -299,7 +353,7 @@ ollama pull llama3.2
 # 1. Install dependencies
 npm install
 
-# 2. Fill .env (only DATABASE_URL is strictly required; Ollama needs no key)
+# 2. Fill .env (DATABASE_URL is required; Ollama needs no key)
 # DATABASE_URL=postgresql://...  (Supabase transaction pooler)
 # LLM_PROVIDER=ollama
 # LLM_MODEL=llama3.2
@@ -307,11 +361,8 @@ npm install
 # 3. Run DB migration (idempotent)
 npm run db:migrate --workspace=apps/api
 
-# 4. (Optional) Seed default Ollama provider row
-npx tsx apps/api/src/db/seed.ts
-
-# 5. Start both servers
-npm run dev:api   # → http://localhost:3001
+# 4. Start both servers
+npm run dev:api   # → http://localhost:3001  (seeds built-in tools on startup)
 npm run dev:web   # → http://localhost:3000
 ```
 
@@ -322,18 +373,23 @@ npm run dev:web   # → http://localhost:3000
 | Phase | Description | Status |
 |---|---|---|
 | 1 | Walking skeleton: monorepo, DB, AgentNode, API, basic UI | ✅ Complete |
-| 2 | Tool Layer: built-ins library, tool CRUD UI, dynamic registry | ✅ Complete |
-| 3 | **Orchestration**: `TaskNode` linear chaining, multi-agent runs | 🔄 Next up |
-| 4 | Async dispatch: Redis + BullMQ, non-blocking frontend polling | 🔲 |
-| 5 | Observability: Run History UI, polymorphic execution_runs tree | 🔲 |
+| 2 | Tool Layer: DB-driven ToolRegistry, built-ins auto-seeded, tools page | ✅ Complete |
+| 3 | **Orchestration**: `TaskNode` linear chaining, multi-agent runs, AI workflow generation | ✅ Complete |
+| 4 | Async dispatch: Redis + BullMQ, non-blocking execution, frontend polling | 🔲 Next |
+| 5 | Observability: Run History UI, polymorphic `execution_runs` tree browser | 🔲 |
+| 6 | Scheduler: cron/interval/one-time/webhook triggers, `schedule_tasks` ordering | 🔲 |
 
 ---
 
 ## 9. Key Decisions & Notes
 
 - **No model_name override per agent** — model is always sourced from `llm_settings`. Change the provider row to change the model.
-- **Ollama is the default LLM** — exposes a native Anthropic Messages API at `localhost:11434` (v0.14+) AND an OpenAI-compatible API at `localhost:11434/v1`. We use the OAI-compatible endpoint via the `openai` npm package.
+- **Ollama is the default LLM** — exposes an OpenAI-compatible API at `localhost:11434/v1`. We use the `openai` npm package for all OAI-compatible providers (Ollama, Groq, OpenAI, Gemini).
 - **`@anthropic-ai/claude-agent-sdk` removed** — it required a real Anthropic account subprocess and cannot be pointed at Ollama.
-- **DB migrations via scripts**: one-off schema changes go in `apps/api/scripts/` as TypeScript files run with `npx tsx`.
-- **Groq fully removed**: from types, Zod enums, schema CHECK constraints, seed data, UI, and `.env` defaults.
-- **agent_group**: new field on agents. Used purely for UI grouping in the sidebar. Not used in execution.
+- **ToolRegistry is the single source of truth** — all tool definitions, executors, and seeding logic live in `ToolRegistry.ts`. `builtins.ts` is an empty stub.
+- **Built-ins auto-seed on startup** — `ToolRegistry.seed()` is called in `index.ts` before the server starts accepting requests. Uses `ON CONFLICT (name) DO NOTHING` — safe to call repeatedly.
+- **web_search uses terminal errors** — DuckDuckGo sometimes returns empty body (causes `SyntaxError` on `res.json()`). All failure paths return `error: 'terminal'` with explicit "do not retry" instructions to prevent the model from looping.
+- **Task step prompts are context-aware** — Step 1 gets the task description + user prompt. All subsequent steps get the previous step's full output injected as context, enabling natural research → synthesize → report chains.
+- **Execution tree is fully logged** — every `TaskNode` run creates a parent `execution_run` with child `execution_run` records per agent step, linked via `parent_run_id`. Ready for the Run History UI in Phase 5.
+- **agent_group** — field on agents used purely for UI sidebar grouping. Not used in execution.
+- **Groq supported** — `groq` is a valid provider in `llm_settings`. Uses `openai` npm package with `baseURL: https://api.groq.com/openai/v1`.
