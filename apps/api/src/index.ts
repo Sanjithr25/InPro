@@ -5,10 +5,11 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { config } from './config.js';
 
-import agentsRouter     from './routes/agents.js';
-import toolsRouter      from './routes/tools.js';
+import agentsRouter      from './routes/agents.js';
+import toolsRouter       from './routes/tools.js';
+import tasksRouter       from './routes/tasks.js';
 import llmSettingsRouter from './routes/llm-settings.js';
-import { ToolRegistry } from './engine/ToolRegistry.js';
+import { ToolRegistry }  from './engine/ToolRegistry.js';
 
 const app = express();
 
@@ -26,6 +27,7 @@ app.get('/health', (_req, res) => res.json({ status: 'ok', ts: new Date().toISOS
 // ─── Routes ───────────────────────────────────────────────────────────────────
 app.use('/api/agents',       agentsRouter);
 app.use('/api/tools',        toolsRouter);
+app.use('/api/tasks',        tasksRouter);
 app.use('/api/llm-settings', llmSettingsRouter);
 // removed proxy usage
 

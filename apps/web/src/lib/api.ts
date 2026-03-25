@@ -68,6 +68,50 @@ export const toolsApi = {
     req<{ updated: boolean }>(`/api/tools/${id}`, { method: 'PUT', body: JSON.stringify({ is_enabled }) }),
 };
 
+// ─── Tasks ────────────────────────────────────────────────────────────────────
+export type WorkflowStep = {
+  agentId: string;
+  stepName: string;
+  description: string;
+  promptOverride?: string;
+};
+
+export type TaskRow = {
+  id: string;
+  name: string;
+  description: string;
+  workflow_definition: WorkflowStep[];
+  step_count?: number;
+  last_run_status?: 'pending' | 'running' | 'completed' | 'failed' | null;
+  last_run_at?: string | null;
+  created_at: string;
+  updated_at?: string;
+};
+
+export const tasksApi = {
+  list: () => req<TaskRow[]>('/api/tasks'),
+  get:  (id: string) => req<TaskRow>(`/api/tasks/${id}`),
+  create: (body: Pick<TaskRow, 'name' | 'description' | 'workflow_definition'>) =>
+    req<{ id: string }>('/api/tasks', { method: 'POST', body: JSON.stringify(body) }),
+  update: (id: string, body: Partial<Pick<TaskRow, 'name' | 'description' | 'workflow_definition'>>) =>
+    req<{ updated: boolean }>(`/api/tasks/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  delete: (id: string) =>
+    req<{ deleted: boolean }>(`/api/tasks/${id}`, { method: 'DELETE' }),
+  run: (id: string, prompt?: string) =>
+    req<{
+      success: boolean;
+      output: { text: string; steps: number; summary?: string };
+      tokenUsage?: { inputTokens: number; outputTokens: number };
+      toolsUsed?: string[];
+      error?: string;
+    }>(`/api/tasks/${id}/run`, { method: 'POST', body: JSON.stringify({ prompt: prompt ?? '' }) }),
+  generateWorkflow: (description: string, agentIds: string[]) =>
+    req<{ steps: WorkflowStep[] }>('/api/tasks/generate-workflow', {
+      method: 'POST',
+      body: JSON.stringify({ description, agentIds }),
+    }),
+};
+
 // ─── LLM Settings ────────────────────────────────────────────────────────────
 export type LlmSettingRow = {
   id: string; provider: string; base_url: string | null;
