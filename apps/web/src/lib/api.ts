@@ -80,6 +80,7 @@ export type TaskRow = {
   id: string;
   name: string;
   description: string;
+  llm_provider_id?: string | null;
   workflow_definition: WorkflowStep[];
   step_count?: number;
   last_run_status?: 'pending' | 'running' | 'completed' | 'failed' | null;
@@ -91,9 +92,9 @@ export type TaskRow = {
 export const tasksApi = {
   list: () => req<TaskRow[]>('/api/tasks'),
   get:  (id: string) => req<TaskRow>(`/api/tasks/${id}`),
-  create: (body: Pick<TaskRow, 'name' | 'description' | 'workflow_definition'>) =>
+  create: (body: Pick<TaskRow, 'name' | 'description' | 'workflow_definition' | 'llm_provider_id'>) =>
     req<{ id: string }>('/api/tasks', { method: 'POST', body: JSON.stringify(body) }),
-  update: (id: string, body: Partial<Pick<TaskRow, 'name' | 'description' | 'workflow_definition'>>) =>
+  update: (id: string, body: Partial<Pick<TaskRow, 'name' | 'description' | 'workflow_definition' | 'llm_provider_id'>>) =>
     req<{ updated: boolean }>(`/api/tasks/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   delete: (id: string) =>
     req<{ deleted: boolean }>(`/api/tasks/${id}`, { method: 'DELETE' }),

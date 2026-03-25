@@ -1,36 +1,27 @@
 /**
- * TaskNode — Linear Multi-Agent Orchestrator
+ * TaskNode — Autonomous Task Delegator
  * ─────────────────────────────────────────────────────────────────────────────
- * Executes a task by running its workflow_definition steps sequentially.
+ * A TaskNode acts as a "Manager Agent". It is assigned a top-level goal (task description)
+ * and a team of specialized agents (`agent_ids`).
  *
- * Each step is an AgentNode execution. The output of step N is injected into
- * the prompt of step N+1 so agents can build on each other's work.
+ * Instead of executing steps linearly, the Task LLM decides how to solve the goal by
+ * delegating sub-tasks to its assigned agents.
  *
- * Execution model:
- *   1. Create a parent execution_run record (node_type='task')
- *   2. For each step in workflow_definition (in order):
- *      a. Create a child execution_run (node_type='agent', parent_run_id=taskRunId)
- *      b. Run AgentNode with the step's agentId + composed prompt
- *      c. If step fails → mark task failed, stop chain
- *      d. Append step output to context for next step
- *   3. Mark task run completed with full chain output
+ * The Task LLM is given dynamic tools — one for each assigned agent (e.g., `delegate_to_researcher`).
+ * When it calls a delegate tool, the TaskNode:
+ *   1. Spawns an AgentNode for that specific agent
+ *   2. Passes the Task LLM's instructions to the agent
+ *   3. Waits for the agent to finish
+ *   4. Feeds the agent's output back to the Task LLM
  *
- * The context passed between steps:
- *   { previousOutput, stepName, stepIndex, totalSteps, taskDescription }
+ * The loop continues until the Task LLM determines the goal is fully achieved.
  */
 
 import db from '../db/client.js';
 import { AgentNode } from './AgentNode.js';
-import { ExecutionContext, ExecutionResult, IExecutableNode } from '../types.js';
+import { LLMProviderFactory, type ChatMessage } from './LLMProviderFactory.js';
+import { ExecutionContext, ExecutionResult, IExecutableNode, ToolDefinition } from '../types.js';
 import { v4 as uuidv4 } from 'uuid';
-
-export interface WorkflowStep {
-  agentId: string;
-  stepName: string;
-  description: string;
-  /** Optional override prompt for this step. If absent, the task generates one. */
-  promptOverride?: string;
-}
 
 export class TaskNode implements IExecutableNode {
   async execute(ctx: ExecutionContext): Promise<ExecutionResult> {
@@ -39,191 +30,237 @@ export class TaskNode implements IExecutableNode {
       initialPrompt?: string;
     };
 
+    if (ctx.currentDepth >= ctx.maxDepth) {
+        return { success: false, output: { text: '' }, error: 'Max task depth exceeded' };
+    }
+
     // ── 1. Load task definition ───────────────────────────────────────────────
     const taskRes = await db.query(`SELECT * FROM tasks WHERE id = $1`, [taskId]);
     if (taskRes.rows.length === 0) {
       return { success: false, output: { text: '' }, error: `Task not found: ${taskId}` };
     }
     const task = taskRes.rows[0];
-    const steps: WorkflowStep[] = Array.isArray(task.workflow_definition)
-      ? task.workflow_definition
-      : JSON.parse(task.workflow_definition ?? '[]');
 
-    if (steps.length === 0) {
-      return {
-        success: false,
-        output: { text: '' },
-        error: 'Task has no workflow steps. Add at least one agent step.',
-      };
+    // Load agents from workflow definition
+    const rawWorkflow = task.workflow_definition;
+    const workflow: any[] = Array.isArray(rawWorkflow) ? rawWorkflow : JSON.parse(rawWorkflow ?? '[]');
+    const agentIds = [...new Set(workflow.map(s => s.agentId))];
+    
+    let agents: any[] = [];
+    if (agentIds.length > 0) {
+      const agentsRes = await db.query(
+        `SELECT id, name, skill FROM agents WHERE id = ANY($1::uuid[])`,
+        [agentIds]
+      );
+      agents = agentsRes.rows;
     }
 
     // ── 2. Create parent task run ─────────────────────────────────────────────
-    const taskRunId = uuidv4();
-    await db.query(
-      `INSERT INTO execution_runs
-         (id, node_type, node_id, parent_run_id, status, input_data, started_at)
-       VALUES ($1, 'task', $2, $3, 'running', $4, NOW())`,
-      [
-        taskRunId,
-        taskId,
-        ctx.parentRunId ?? null,
-        JSON.stringify({ taskId, initialPrompt, steps: steps.length }),
-      ]
-    );
-
-    // ── 3. Execute steps linearly ─────────────────────────────────────────────
-    const stepOutputs: string[] = [];
-    const allToolsUsed: string[] = [];
-    const totalTokens = { inputTokens: 0, outputTokens: 0 };
-
-    let previousOutput = initialPrompt ?? task.description ?? '';
-
-    for (let i = 0; i < steps.length; i++) {
-      const step = steps[i];
-      const stepNumber = i + 1;
-
-      // Build the prompt for this step — inject previous step output as context
-      const stepPrompt = step.promptOverride
-        ?? buildStepPrompt({
-            step,
-            stepIndex: i,
-            totalSteps: steps.length,
-            taskDescription: task.description ?? '',
-            previousOutput,
-            initialPrompt: initialPrompt ?? '',
-          });
-
-      console.log(
-        `[TaskNode] Task "${task.name}" — Step ${stepNumber}/${steps.length}: "${step.stepName}" (agent: ${step.agentId})`
-      );
-
-      // Create child agent run
-      const agentRunId = uuidv4();
-      await db.query(
-        `INSERT INTO execution_runs
-           (id, node_type, node_id, parent_run_id, status, input_data, started_at)
-         VALUES ($1, 'agent', $2, $3, 'running', $4, NOW())`,
-        [
-          agentRunId,
-          step.agentId,
-          taskRunId,
-          JSON.stringify({ stepName: step.stepName, stepIndex: i, prompt: stepPrompt }),
-        ]
-      );
-
-      // Run the agent
-      const agentCtx: ExecutionContext = {
-        inputData: {
-          agentId: step.agentId,
-          runId: agentRunId,
-          prompt: stepPrompt,
-        },
-        currentDepth: ctx.currentDepth + 1,
-        totalSteps: steps.length,
-        maxDepth: ctx.maxDepth,
-        parentRunId: taskRunId,
-      };
-
-      const agentNode = new AgentNode();
-      const result = await agentNode.execute(agentCtx);
-
-      // Update child run record
-      await db.query(
-        `UPDATE execution_runs
-         SET status = $1, ended_at = NOW(), output_data = $2, error_message = $3
-         WHERE id = $4`,
-        [
-          result.success ? 'completed' : 'failed',
-          JSON.stringify(result),
-          result.error ?? null,
-          agentRunId,
-        ]
-      );
-
-      if (!result.success) {
-        // Chain broken — fail the task
+    const taskRunId = ctx.inputData.runId as string | undefined ?? uuidv4();
+    if (!ctx.inputData.runId) {
         await db.query(
-          `UPDATE execution_runs
-           SET status = 'failed', ended_at = NOW(), error_message = $1
-           WHERE id = $2`,
-          [`Step ${stepNumber} "${step.stepName}" failed: ${result.error}`, taskRunId]
+        `INSERT INTO execution_runs
+            (id, node_type, node_id, parent_run_id, status, input_data, started_at)
+        VALUES ($1, 'task', $2, $3, 'running', $4, NOW())`,
+        [taskRunId, taskId, ctx.parentRunId ?? null, JSON.stringify({ taskId, initialPrompt, agents: agents.length })]
         );
-        return {
-          success: false,
-          output: {
-            text: stepOutputs.join('\n\n---\n\n'),
-            failedStep: stepNumber,
-            failedStepName: step.stepName,
-            completedSteps: i,
-          },
-          error: `Step ${stepNumber} "${step.stepName}" failed: ${result.error}`,
-          tokenUsage: totalTokens,
-          toolsUsed: allToolsUsed,
-        };
-      }
-
-      // Collect outputs
-      const stepText = (result.output?.text as string) ?? '';
-      stepOutputs.push(`### Step ${stepNumber}: ${step.stepName}\n\n${stepText}`);
-      previousOutput = stepText;
-
-      if (result.tokenUsage) {
-        totalTokens.inputTokens  += result.tokenUsage.inputTokens;
-        totalTokens.outputTokens += result.tokenUsage.outputTokens;
-      }
-      if (result.toolsUsed) allToolsUsed.push(...result.toolsUsed);
     }
 
-    // ── 4. Mark task completed ────────────────────────────────────────────────
-    const finalOutput = {
-      text: stepOutputs.join('\n\n---\n\n'),
-      steps: stepOutputs.length,
-      summary: stepOutputs[stepOutputs.length - 1] ?? '',
-    };
-
-    await db.query(
-      `UPDATE execution_runs
-       SET status = 'completed', ended_at = NOW(), output_data = $1
-       WHERE id = $2`,
-      [JSON.stringify(finalOutput), taskRunId]
+    // ── 3. Resolve LLM provider ───────────────────────────────────────────────
+    let providerOverride: Parameters<typeof LLMProviderFactory.create>[0] = {};
+    const settingsRes = await db.query(
+      task.llm_provider_id
+        ? `SELECT * FROM llm_settings WHERE id = $1`
+        : `SELECT * FROM llm_settings WHERE is_default = true LIMIT 1`,
+      [task.llm_provider_id ?? undefined].filter(Boolean)
     );
 
-    return {
-      success: true,
-      output: finalOutput,
-      tokenUsage: totalTokens,
-      toolsUsed: [...new Set(allToolsUsed)],
-    };
+    if (settingsRes.rows.length > 0) {
+      const s = settingsRes.rows[0];
+      providerOverride = { provider: s.provider, apiKey: s.api_key, model: s.model_name, baseUrl: s.base_url ?? undefined };
+    } else {
+        await db.query(`UPDATE execution_runs SET status = 'failed', error_message = 'No LLM Provider' WHERE id = $1`, [taskRunId]);
+        return { success: false, output: { text: '' }, error: 'No LLM provider configured' };
+    }
+
+    const llm = LLMProviderFactory.create(providerOverride);
+
+    // ── 4. Build Agent Delegation Tools ───────────────────────────────────────
+    const dynamicTools: ToolDefinition[] = agents.map(agent => {
+        // Safe tool name: lowercase, replace non-alphanumeric with underscore
+        const safeName = agent.name.toLowerCase().replace(/[^a-z0-9]/g, '_');
+        return {
+            name: `delegate_to_${safeName}`,
+            description: `Delegate a sub-task to the agent "${agent.name}". Agent skill/role: ${agent.skill.substring(0, 500)}. Use this to assign work to this agent and wait for their response. Provide clear, comprehensive instructions.`,
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    instructions: {
+                        type: 'string',
+                        description: 'Detailed instructions, context, and the exact goal the agent needs to achieve.',
+                    }
+                },
+                required: ['instructions']
+            },
+            // Store mapping on the tool definition object (not standard but convenient)
+            _agentId: agent.id,
+            _agentName: agent.name
+        } as unknown as ToolDefinition;
+    });
+
+    const toolMap = new Map(dynamicTools.map((t: any) => [t.name, t]));
+
+    // ── 5. Agentic Loop for Task Manager ──────────────────────────────────────
+    const workflowStr = workflow.map((s, i) => 
+      `Step ${i + 1}: [${agents.find(a => a.id === s.agentId)?.name || s.agentId}] ${s.stepName}\n  Instructions: ${s.description}`
+    ).join('\n');
+
+    const systemPrompt = `You are a high-level Task Manager AI.
+Your Task:
+Name: ${task.name}
+Description/Goal: ${task.description}
+
+Here is the explicit workflow plan requested by the user:
+<workflow_plan>
+${workflowStr || "No specific workflow plan provided. Create your own."}
+</workflow_plan>
+
+You have a team of highly capable specialized agents available as tools.
+Your job is to coordinate them, delegate work to them, and synthesize their outputs to achieve the overall goal.
+
+Rules:
+1. You should generally follow the <workflow_plan> provided above, but you are autonomous. You may deviate from it, repeat steps, or ask agents to correct their work if necessary.
+2. Call the delegation tools to assign work to the appropriate agents. Provide clear instructions for what you need them to do.
+3. Wait for the agent's response, evaluate it, and take the next step.
+4. If an agent fails or provides incomplete work, explicitly tell them what to fix in a new delegation.
+5. Once you determine the overall goal is fully achieved, provide a final comprehensive summary/report of the outcome to the user, and end your turn.
+6. Do NOT try to do the hard work yourself if an agent is better suited for it. You are the manager.`;
+
+    const messages: ChatMessage[] = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: initialPrompt ? `User Request: ${initialPrompt}` : "Begin executing the task." }
+    ];
+
+    const MAX_TURNS = 15;
+    const allToolsUsed: string[] = [];
+    const totalTokens = { inputTokens: 0, outputTokens: 0 };
+    let finalOutput = '';
+
+    console.log(`[TaskNode] Starting autonomous task "${task.name}" with ${agents.length} agents squad`);
+
+    try {
+        for (let turn = 0; turn < MAX_TURNS; turn++) {
+            const response = await llm.chat(messages, dynamicTools, { maxTokens: 4096 });
+            
+            if (response.inputTokens) {
+                totalTokens.inputTokens += response.inputTokens;
+                totalTokens.outputTokens += response.outputTokens;
+            }
+
+            messages.push({
+                role: 'assistant',
+                content: response.content || '',
+                // Omitting toolCalls from the history for now
+                // to avoid strict validation errors in OpenAI/Groq payloads
+            } as ChatMessage);
+
+            if (response.content) {
+                finalOutput += (finalOutput ? '\n\n' : '') + response.content;
+            }
+
+            if (response.stopReason !== 'tool_use' || !response.toolCalls || response.toolCalls.length === 0) {
+                console.log(`[TaskNode] Task "${task.name}" finished autonomously.`);
+                break;
+            }
+
+            // Execute delegated agents
+            const toolResultsMsgs: ChatMessage[] = [];
+            
+            for (const tc of response.toolCalls) {
+                allToolsUsed.push(tc.name);
+                console.log(`[TaskNode] Delegating: ${tc.name}`);
+                
+                const toolDef = toolMap.get(tc.name) as any;
+                let toolOutput: any;
+
+                if (!toolDef || !toolDef._agentId) {
+                    toolOutput = { error: `Agent tool ${tc.name} not found or invalid.` };
+                } else {
+                    // Create child agent run
+                    const instructions = tc.arguments.instructions as string;
+                    
+                    const agentRunId = uuidv4();
+                    await db.query(
+                        `INSERT INTO execution_runs
+                            (id, node_type, node_id, parent_run_id, status, input_data, started_at)
+                        VALUES ($1, 'agent', $2, $3, 'running', $4, NOW())`,
+                        [agentRunId, toolDef._agentId, taskRunId, JSON.stringify({ prompt: instructions })]
+                    );
+
+                    const agentCtx: ExecutionContext = {
+                        inputData: { agentId: toolDef._agentId, runId: agentRunId, prompt: instructions },
+                        currentDepth: ctx.currentDepth + 1,
+                        totalSteps: 1,
+                        maxDepth: ctx.maxDepth,
+                        parentRunId: taskRunId,
+                    };
+
+                    const agentNode = new AgentNode();
+                    const result = await agentNode.execute(agentCtx);
+
+                    if (result.tokenUsage) {
+                        totalTokens.inputTokens += result.tokenUsage.inputTokens;
+                        totalTokens.outputTokens += result.tokenUsage.outputTokens;
+                    }
+
+                    // Update child run record
+                    await db.query(
+                        `UPDATE execution_runs
+                        SET status = $1, ended_at = NOW(), output_data = $2, error_message = $3
+                        WHERE id = $4`,
+                        [result.success ? 'completed' : 'failed', JSON.stringify(result), result.error ?? null, agentRunId]
+                    );
+
+                    toolOutput = result.success ? result.output?.text : { error: result.error };
+                }
+
+                toolResultsMsgs.push({
+                    role: 'user',
+                    content: `Result from ${tc.name}:\n\n${typeof toolOutput === 'string' ? toolOutput : JSON.stringify(toolOutput, null, 2)}`
+                });
+            }
+
+            messages.push(...toolResultsMsgs);
+        }
+
+        // ── 6. Update task run record ─────────────────────────────────────────────
+        const outputPayload = {
+            text: finalOutput,
+            steps: allToolsUsed.length,
+            summary: finalOutput.substring(0, 1000)
+        };
+
+        await db.query(
+            `UPDATE execution_runs
+            SET status = 'completed', ended_at = NOW(), output_data = $1
+            WHERE id = $2`,
+            [JSON.stringify(outputPayload), taskRunId]
+        );
+
+        return {
+            success: true,
+            output: outputPayload,
+            tokenUsage: totalTokens,
+            toolsUsed: [...new Set(allToolsUsed)]
+        };
+
+    } catch (err: any) {
+        console.error('[TaskNode Error]', err);
+        await db.query(
+            `UPDATE execution_runs SET status = 'failed', ended_at = NOW(), error_message = $1 WHERE id = $2`,
+            [err.message, taskRunId]
+        );
+        return { success: false, output: { text: '' }, error: err.message };
+    }
   }
-}
-
-// ─── Step Prompt Builder ───────────────────────────────────────────────────────
-
-function buildStepPrompt(opts: {
-  step: WorkflowStep;
-  stepIndex: number;
-  totalSteps: number;
-  taskDescription: string;
-  previousOutput: string;
-  initialPrompt: string;
-}): string {
-  const { step, stepIndex, totalSteps, taskDescription, previousOutput, initialPrompt } = opts;
-  const isFirst = stepIndex === 0;
-
-  if (isFirst) {
-    return [
-      `You are executing Step 1 of ${totalSteps} in a multi-agent workflow.`,
-      `Task: ${taskDescription}`,
-      `Your role in this step: ${step.description}`,
-      initialPrompt ? `\nUser request:\n${initialPrompt}` : '',
-    ].filter(Boolean).join('\n');
-  }
-
-  return [
-    `You are executing Step ${stepIndex + 1} of ${totalSteps} in a multi-agent workflow.`,
-    `Task: ${taskDescription}`,
-    `Your role in this step: ${step.description}`,
-    `\nOutput from the previous step:\n${previousOutput}`,
-    `\nBuild upon the above to complete your step. Be specific and actionable.`,
-  ].join('\n');
 }

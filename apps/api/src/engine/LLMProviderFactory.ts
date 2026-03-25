@@ -25,6 +25,7 @@ import { config } from '../config.js';
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
+  toolCalls?: ChatToolCall[];
 }
 
 export interface ChatToolCall {

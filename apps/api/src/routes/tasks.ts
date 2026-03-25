@@ -34,6 +34,7 @@ const TaskSchema = z.object({
   name:                z.string().min(1).max(200),
   description:         z.string().default(''),
   workflow_definition: z.array(WorkflowStepSchema).default([]),
+  llm_provider_id:     z.string().uuid().optional().nullable(),
 });
 
 // ─── GET /api/tasks ───────────────────────────────────────────────────────────
@@ -61,7 +62,7 @@ router.get('/', handle(async (_req, res) => {
 // ─── GET /api/tasks/:id ───────────────────────────────────────────────────────
 router.get('/:id', handle(async (req, res) => {
   const { rows } = await pool.query(
-    `SELECT id, name, description, workflow_definition, created_at, updated_at FROM tasks WHERE id = $1`,
+    `SELECT id, name, description, llm_provider_id, workflow_definition, created_at, updated_at FROM tasks WHERE id = $1`,
     [req.params.id]
   );
   if (rows.length === 0) { res.status(404).json({ error: 'Task not found' }); return; }
@@ -72,11 +73,11 @@ router.get('/:id', handle(async (req, res) => {
 router.post('/', handle(async (req, res) => {
   const parsed = TaskSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.flatten() }); return; }
-  const { name, description, workflow_definition } = parsed.data;
+  const { name, description, workflow_definition, llm_provider_id } = parsed.data;
   const id = uuidv4();
   await pool.query(
-    `INSERT INTO tasks (id, name, description, workflow_definition) VALUES ($1,$2,$3,$4)`,
-    [id, name, description, JSON.stringify(workflow_definition)]
+    `INSERT INTO tasks (id, name, description, workflow_definition, llm_provider_id) VALUES ($1,$2,$3,$4,$5)`,
+    [id, name, description, JSON.stringify(workflow_definition), llm_provider_id ?? null]
   );
   res.status(201).json({ data: { id } });
 }));

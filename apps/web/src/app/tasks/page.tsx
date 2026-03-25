@@ -7,8 +7,8 @@ import {
   XCircle, Clock, Zap, ArrowRight, RotateCcw,
 } from 'lucide-react';
 import {
-  tasksApi, agentsApi,
-  type TaskRow, type WorkflowStep, type AgentRow,
+  tasksApi, agentsApi, llmApi,
+  type TaskRow, type WorkflowStep, type AgentRow, type LlmSettingRow
 } from '@/lib/api';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -16,6 +16,7 @@ const blankTask = (): Omit<TaskRow, 'id' | 'created_at'> & { entries: WorkflowSt
   name: '', description: '',
   workflow_definition: [],
   entries: [],
+  llm_provider_id: null,
 });
 
 const statusColor: Record<string, string> = {
@@ -46,6 +47,7 @@ function timeAgo(iso: string) {
 export default function TasksPage() {
   const [tasks, setTasks]       = useState<TaskRow[]>([]);
   const [agents, setAgents]     = useState<AgentRow[]>([]);
+  const [llmSettings, setLlmSettings] = useState<LlmSettingRow[]>([]);
   const [selected, setSelected] = useState<TaskRow | null>(null);
   const [form, setForm]         = useState(blankTask());
   const [isNew, setIsNew]       = useState(false);
@@ -65,9 +67,10 @@ export default function TasksPage() {
   const dragIdx = useRef<number | null>(null);
 
   const load = useCallback(async () => {
-    const [t, a] = await Promise.all([tasksApi.list(), agentsApi.list()]);
+    const [t, a, l] = await Promise.all([tasksApi.list(), agentsApi.list(), llmApi.list()]);
     setTasks(t);
     setAgents(a);
+    setLlmSettings(l);
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -76,13 +79,14 @@ export default function TasksPage() {
     t.name.toLowerCase().includes(search.toLowerCase()) ||
     t.description.toLowerCase().includes(search.toLowerCase())
   );
+  const defaultLlm = llmSettings.find(l => l.is_default);
 
   // ── Select ─────────────────────────────────────────────────────────────────
   const selectTask = async (task: TaskRow) => {
     const full = await tasksApi.get(task.id);
     setSelected(full);
     const steps = Array.isArray(full.workflow_definition) ? full.workflow_definition : [];
-    setForm({ name: full.name, description: full.description, workflow_definition: steps, entries: steps });
+    setForm({ name: full.name, description: full.description, llm_provider_id: full.llm_provider_id, workflow_definition: steps, entries: steps });
     setGenAgentIds(steps.map(s => s.agentId));
     setIsNew(false);
     setRunResult(null);
@@ -107,6 +111,7 @@ export default function TasksPage() {
         name: form.name,
         description: form.description,
         workflow_definition: form.entries,
+        llm_provider_id: form.llm_provider_id ?? null,
       };
       if (isNew) {
         const { id } = await tasksApi.create(payload);
@@ -324,7 +329,7 @@ export default function TasksPage() {
                 />
               </div>
 
-              <div className="form-group" style={{ marginBottom: 0 }}>
+              <div className="form-group">
                 <label className="form-label">Description
                   <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}> — used for LLM workflow generation</span>
                 </label>
@@ -336,6 +341,27 @@ export default function TasksPage() {
                   value={form.description}
                   onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
                 />
+              </div>
+
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Task Manager LLM</label>
+                <div style={{ position: 'relative' }}>
+                  <select
+                    className="form-select"
+                    value={form.llm_provider_id ?? ''}
+                    onChange={e => setForm(f => ({ ...f, llm_provider_id: e.target.value || null }))}
+                  >
+                    <option value="">
+                      Use Default ({defaultLlm ? `${defaultLlm.provider} - ${defaultLlm.model_name}` : 'Not Set'})
+                    </option>
+                    {llmSettings.map(l => (
+                      <option key={l.id} value={l.id}>
+                        {l.provider} — {l.model_name} {l.is_default ? '(Default)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown width={14} height={14} style={{ position: 'absolute', right: 12, top: 11, pointerEvents: 'none', color: 'var(--text-muted)' }} />
+                </div>
               </div>
             </div>
 
