@@ -213,7 +213,7 @@ export default function AgentsPage() {
                 >
                   <div className="list-item-name">{agent.name}</div>
                   <div className="list-item-meta">
-                    {agent.llm_provider ?? defaultProvider?.provider ?? 'ollama'} · {agent.provider_model ?? defaultProvider?.model_name ?? 'default'}
+                    {agent.llm_provider ?? defaultProvider?.provider ?? 'llama-local'} · {agent.provider_model ?? defaultProvider?.model_name ?? 'llama3.2'}
                   </div>
                 </div>
               ))}

@@ -33,15 +33,28 @@ export interface IExecutableNode {
 
 // ─── LLM Provider Types ──────────────────────────────────────────────────────
 
-export type LLMProviderName = 'groq' | 'anthropic' | 'openai' | 'gemini' | 'ollama';
+export type LLMProviderName = 
+  | 'llama-local'  // System-provided local llama
+  | 'ollama'       // User-configured Ollama cloud
+  | 'groq'         // Groq
+  | 'gemini'       // Google Gemini
+  | 'openai'       // OpenAI
+  | 'anthropic'    // Anthropic Claude
+  | 'custom';      // Custom OpenAI-compatible endpoint
 
 export interface LLMProviderConfig {
   provider: LLMProviderName;
   model: string;
-  apiKey: string;
+  apiKey?: string;
   baseUrl?: string;
   temperature?: number;
   maxTokens?: number;
+}
+
+export interface ProviderRequirements {
+  requiresApiKey: boolean;
+  requiresBaseUrl: boolean;
+  defaultBaseUrl?: string;
 }
 
 export interface ToolDefinition {

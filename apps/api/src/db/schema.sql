@@ -7,9 +7,10 @@
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ─── LLM Provider Settings ────────────────────────────────────────────────────
+-- Supports: system-provided (llama local), user-configured (ollama cloud, groq, gemini, openai, anthropic, etc.)
 CREATE TABLE IF NOT EXISTS llm_settings (
   id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  provider     TEXT NOT NULL CHECK (provider IN ('anthropic','openai','gemini','ollama')),
+  provider     TEXT NOT NULL CHECK (provider IN ('llama-local','ollama','groq','gemini','openai','anthropic','custom')),
   api_key      TEXT NOT NULL DEFAULT '',
   base_url     TEXT,
   model_name   TEXT NOT NULL,
@@ -117,7 +118,8 @@ CREATE INDEX IF NOT EXISTS idx_exec_runs_pending
 CREATE INDEX IF NOT EXISTS idx_exec_runs_node
   ON execution_runs(node_type, node_id);
 
--- ─── Seed: Default LLM provider (Ollama) ───────────────────────────────────────
-INSERT INTO llm_settings (provider, model_name, is_default, base_url)
-VALUES ('ollama', 'llama3.2', true, 'http://localhost:11434/v1')
+-- ─── Seed: Default LLM provider (Llama Local) ──────────────────────────────────
+-- System-provided local llama model (no API key required)
+INSERT INTO llm_settings (provider, model_name, is_default, base_url, api_key)
+VALUES ('llama-local', 'llama3.2', true, 'http://localhost:11434/v1', 'not-required')
 ON CONFLICT DO NOTHING;

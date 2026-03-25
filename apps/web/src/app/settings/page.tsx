@@ -1,20 +1,20 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Settings2, Key, Eye, EyeOff, Save, CheckCircle2, Circle, Plus } from 'lucide-react';
+import { Settings2, Key, Eye, EyeOff, Save, CheckCircle2, Circle, Plus, Trash2 } from 'lucide-react';
 import { llmApi, type LlmSettingRow } from '@/lib/api';
 
 const PROVIDER_LABELS: Record<string, { label: string; icon: string; defaultModel: string; defaultBase?: string; suggestedModels?: string[] }> = {
-  anthropic: { label: 'Anthropic',  icon: '🟠', defaultModel: 'claude-3-5-sonnet-20241022', defaultBase: undefined, suggestedModels: ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'] },
+  'llama-local': { label: 'Llama Local (System)', icon: '🦙', defaultModel: 'llama3.2', defaultBase: 'http://localhost:11434/v1', suggestedModels: ['llama3.2', 'llama3.1'] },
+  ollama:    { label: 'Ollama Cloud',     icon: '🦙', defaultModel: 'llama3.2',                defaultBase: 'http://localhost:11434/v1', suggestedModels: ['llama3.2', 'glm-5:cloud'] },
+  anthropic: { label: 'Anthropic',  icon: '�', defaultModel: 'claude-3-5-sonnet-20241022', defaultBase: undefined, suggestedModels: ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'] },
   openai:    { label: 'OpenAI',     icon: '🟢', defaultModel: 'gpt-4o',                  defaultBase: undefined, suggestedModels: ['gpt-4o', 'gpt-4o-mini', 'o1-preview'] },
   gemini:    { label: 'Gemini',     icon: '🔵', defaultModel: 'gemini-2.0-flash',        defaultBase: undefined, suggestedModels: ['gemini-2.0-flash', 'gemini-1.5-pro'] },
-  ollama:    { label: 'Ollama',     icon: '🦙', defaultModel: 'llama3.2',                defaultBase: 'http://localhost:11434/v1', suggestedModels: ['llama3.2', 'glm-5:cloud'] },
   groq:      { label: 'Groq',       icon: '⚡', defaultModel: 'llama-3.3-70b-versatile', defaultBase: 'https://api.groq.com/openai/v1', suggestedModels: ['llama-3.3-70b-versatile', 'mixtral-8x7b-32768'] },
-  deepseek:  { label: 'DeepSeek',   icon: '🐳', defaultModel: 'deepseek-chat',           defaultBase: 'https://api.deepseek.com/v1', suggestedModels: ['deepseek-chat', 'deepseek-reasoner'] },
-  'openai-compatible': { label: 'Generic OpenAI', icon: '🤖', defaultModel: 'model-name', defaultBase: 'http://custom-api:8080/v1' },
+  custom:    { label: 'Custom Endpoint', icon: '🤖', defaultModel: 'model-name', defaultBase: 'http://custom-api:8080/v1' },
 };
 
-function ProviderCard({ setting, onSaved }: { setting: LlmSettingRow; onSaved: () => void }) {
+function ProviderCard({ setting, onSaved, onDeleted }: { setting: LlmSettingRow; onSaved: () => void; onDeleted: () => void }) {
   const meta = PROVIDER_LABELS[setting.provider] ?? { label: setting.provider, icon: '🤖', defaultModel: '' };
   const [apiKey, setApiKey]   = useState('');
   const [model, setModel]     = useState(setting.model_name);
@@ -22,6 +22,8 @@ function ProviderCard({ setting, onSaved }: { setting: LlmSettingRow; onSaved: (
   const [show, setShow]       = useState(false);
   const [saving, setSaving]   = useState(false);
   const [saved, setSaved]     = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const save = async () => {
     setSaving(true);
@@ -43,6 +45,24 @@ function ProviderCard({ setting, onSaved }: { setting: LlmSettingRow; onSaved: (
   const setDefault = async () => {
     await llmApi.update(setting.id, { is_default: true });
     onSaved();
+  };
+
+  const handleDelete = async () => {
+    if (!confirmDelete) {
+      setConfirmDelete(true);
+      return;
+    }
+
+    setDeleting(true);
+    try {
+      const result = await llmApi.delete(setting.id);
+      alert(result.message);
+      onDeleted();
+    } catch (err: any) {
+      alert(err.message || 'Failed to delete provider');
+      setDeleting(false);
+      setConfirmDelete(false);
+    }
   };
 
   return (
@@ -123,16 +143,28 @@ function ProviderCard({ setting, onSaved }: { setting: LlmSettingRow; onSaved: (
       </div>
 
       {/* Actions */}
-      <div style={{ display: 'flex', gap: 10 }}>
-        <button className="btn btn-primary" onClick={save} disabled={saving}>
-          {saving ? <span className="spinner" /> : saved ? <CheckCircle2 width={14} height={14} /> : <Save width={14} height={14} />}
-          {saved ? 'Saved!' : saving ? 'Saving…' : 'Save'}
-        </button>
-        {!setting.is_default && (
-          <button className="btn btn-ghost" onClick={setDefault}>
-            <CheckCircle2 width={13} height={13} /> Set as Default
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button className="btn btn-primary" onClick={save} disabled={saving}>
+            {saving ? <span className="spinner" /> : saved ? <CheckCircle2 width={14} height={14} /> : <Save width={14} height={14} />}
+            {saved ? 'Saved!' : saving ? 'Saving…' : 'Save'}
           </button>
-        )}
+          {!setting.is_default && (
+            <button className="btn btn-ghost" onClick={setDefault}>
+              <CheckCircle2 width={13} height={13} /> Set as Default
+            </button>
+          )}
+        </div>
+        <button 
+          className={`btn ${confirmDelete ? 'btn-danger' : 'btn-ghost'}`}
+          onClick={handleDelete}
+          disabled={deleting}
+          onBlur={() => setTimeout(() => setConfirmDelete(false), 200)}
+          style={{ marginLeft: 'auto' }}
+        >
+          {deleting ? <span className="spinner" /> : <Trash2 width={13} height={13} />}
+          {confirmDelete ? 'Confirm Delete?' : 'Delete'}
+        </button>
       </div>
     </div>
   );
@@ -172,7 +204,7 @@ export default function SettingsPage() {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(440px, 1fr))', gap: 20 }}>
         {settings.map(s => (
-          <ProviderCard key={s.id} setting={s} onSaved={load} />
+          <ProviderCard key={s.id} setting={s} onSaved={load} onDeleted={load} />
         ))}
       </div>
 

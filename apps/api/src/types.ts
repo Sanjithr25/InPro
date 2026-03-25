@@ -23,12 +23,26 @@ export interface IExecutableNode {
 
 // ─── LLM Provider Types ──────────────────────────────────────────────────────
 
-export type LLMProviderName = 'anthropic' | 'openai' | 'gemini' | 'ollama';
+export type LLMProviderName = 
+  | 'llama-local'  // System-provided local llama
+  | 'ollama'       // User-configured Ollama cloud
+  | 'groq'         // Groq
+  | 'gemini'       // Google Gemini
+  | 'openai'       // OpenAI
+  | 'anthropic'    // Anthropic Claude
+  | 'custom';      // Custom OpenAI-compatible endpoint
 
 export interface ToolDefinition {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+}
+
+// Provider configuration requirements
+export interface ProviderRequirements {
+  requiresApiKey: boolean;
+  requiresBaseUrl: boolean;
+  defaultBaseUrl?: string;
 }
 
 // ─── Database Row Types ──────────────────────────────────────────────────────

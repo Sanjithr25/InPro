@@ -99,4 +99,6 @@ export const llmApi = {
     req<{ updated: boolean }>(`/api/llm-settings/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   create: (body: { provider: string; api_key?: string; base_url?: string; model_name: string; is_default?: boolean }) =>
     req<{ id: string }>('/api/llm-settings', { method: 'POST', body: JSON.stringify(body) }),
+  delete: (id: string) =>
+    req<{ deleted: boolean; agentsUpdated: number; message: string }>(`/api/llm-settings/${id}`, { method: 'DELETE' }),
 };
