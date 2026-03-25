@@ -125,7 +125,7 @@ export class AgentNode implements IExecutableNode {
           console.log(`[AgentNode] Executing tool: ${tc.name}`, tc.arguments);
           let toolResult: Record<string, unknown>;
           try {
-            toolResult = await ToolRegistry.execute(tc.name, tc.arguments, {});
+            toolResult = await ToolRegistry.execute(tc.name, tc.arguments, agentId as string | undefined);
           } catch (toolErr: any) {
             toolResult = { error: toolErr.message };
           }

@@ -18,10 +18,9 @@ export type AgentRow = {
   created_at: string;
 };
 
-
 export const agentsApi = {
-  list: () => req<AgentRow[]>('/api/agents'),
-  get:  (id: string) => req<AgentRow>(`/api/agents/${id}`),
+  list:   () => req<AgentRow[]>('/api/agents'),
+  get:    (id: string) => req<AgentRow>(`/api/agents/${id}`),
   create: (body: Partial<AgentRow> & { tool_ids?: string[] }) =>
     req<{ id: string }>('/api/agents', { method: 'POST', body: JSON.stringify(body) }),
   update: (id: string, body: Partial<AgentRow> & { tool_ids?: string[] }) =>
@@ -41,7 +40,7 @@ export type ConfigField = {
   key: string;
   value: string;
   type: 'text' | 'secret' | 'select' | 'toggle';
-  options?: string[]; // for select type
+  options?: string[];
 };
 
 export type ToolRow = {
@@ -49,42 +48,25 @@ export type ToolRow = {
   name: string;
   description: string;
   is_enabled: boolean;
+  /** true when name matches a known built-in executor in ToolRegistry */
+  is_builtin: boolean;
   schema: Record<string, unknown>;
-  config: Record<string, unknown>;   // key-value config
+  config: Record<string, unknown>;
   created_at: string;
 };
 
 export const toolsApi = {
   list: () => req<ToolRow[]>('/api/tools'),
   get:  (id: string) => req<ToolRow>(`/api/tools/${id}`),
-  create: (body: Omit<ToolRow, 'id' | 'created_at'>) =>
+  create: (body: Omit<ToolRow, 'id' | 'created_at' | 'is_builtin'>) =>
     req<{ id: string }>('/api/tools', { method: 'POST', body: JSON.stringify(body) }),
-  update: (id: string, body: Partial<Omit<ToolRow, 'id' | 'created_at'>>) =>
+  update: (id: string, body: Partial<Omit<ToolRow, 'id' | 'created_at' | 'is_builtin'>>) =>
     req<{ updated: boolean }>(`/api/tools/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   delete: (id: string) =>
     req<{ deleted: boolean }>(`/api/tools/${id}`, { method: 'DELETE' }),
   toggle: (id: string, is_enabled: boolean) =>
     req<{ updated: boolean }>(`/api/tools/${id}`, { method: 'PUT', body: JSON.stringify({ is_enabled }) }),
 };
-
-export type BuiltInToolDef = {
-  name: string;
-  category: string;
-  description: string;
-  schema: Record<string, unknown>;
-  defaultConfig: Record<string, unknown>;
-  icon: string;
-  tagline: string;
-};
-
-export const builtinsApi = {
-  list: () => req<BuiltInToolDef[]>('/api/tools/builtins'),
-  install: (name: string) =>
-    req<{ id: string; installed: boolean; note?: string }>(
-      `/api/tools/builtins/${name}/install`, { method: 'POST' }
-    ),
-};
-
 
 // ─── LLM Settings ────────────────────────────────────────────────────────────
 export type LlmSettingRow = {

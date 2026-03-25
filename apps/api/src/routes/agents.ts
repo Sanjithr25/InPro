@@ -217,7 +217,7 @@ router.post('/:id/stream', async (req: Request, res: Response) => {
           send('tool_start', { name: chunk.name, arguments: chunk.arguments });
           let toolResult: Record<string, unknown>;
           try {
-            toolResult = await ToolRegistry.execute(chunk.name, chunk.arguments, {});
+            toolResult = await ToolRegistry.execute(chunk.name, chunk.arguments, agentId as string);
           } catch (e: any) {
             toolResult = { error: e.message };
           }

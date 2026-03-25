@@ -8,7 +8,7 @@ import { config } from './config.js';
 import agentsRouter     from './routes/agents.js';
 import toolsRouter      from './routes/tools.js';
 import llmSettingsRouter from './routes/llm-settings.js';
-// removed proxy
+import { ToolRegistry } from './engine/ToolRegistry.js';
 
 const app = express();
 
@@ -39,9 +39,16 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 // ─── Start ────────────────────────────────────────────────────────────────────
-app.listen(config.port, () => {
-  console.log(`🚀  API server running on http://localhost:${config.port}`);
-  console.log(`    LLM Provider: ${config.llm.provider} / ${config.llm.model}`);
-});
+ToolRegistry.seed()
+  .then(() => {
+    app.listen(config.port, () => {
+      console.log(`🚀  API server running on http://localhost:${config.port}`);
+      console.log(`    LLM Provider: ${config.llm.provider} / ${config.llm.model}`);
+    });
+  })
+  .catch(err => {
+    console.error('[Startup] ToolRegistry.seed() failed:', err);
+    process.exit(1);
+  });
 
 export default app;
