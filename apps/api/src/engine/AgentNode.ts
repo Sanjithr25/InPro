@@ -143,6 +143,12 @@ export class AgentNode implements IExecutableNode {
         output: { text: outputText.trim() || '(No text response)' },
         tokenUsage,
         toolsUsed: usedTools,
+        providerInfo: {
+          name: providerOverride.provider ?? 'default',
+          model: providerOverride.model ?? 'unknown',
+          wrapper: (providerOverride.provider === 'anthropic') ? 'anthropic' : 'openai',
+          baseUrl: providerOverride.baseUrl,
+        },
       };
 
       if (runId) {

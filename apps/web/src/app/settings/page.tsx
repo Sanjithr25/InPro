@@ -195,7 +195,7 @@ export default function SettingsPage() {
     load();
   };
 
-  const existingProviders = settings.map(s => s.provider);
+  // Multiple entries per provider type are allowed (e.g. two Ollama configs)
 
   return (
     <div className="panel-right" style={{ overflow: 'auto' }}>
@@ -217,20 +217,22 @@ export default function SettingsPage() {
         <div className="card" style={{ marginTop: 20, maxWidth: 480 }}>
           <div className="card-title">Add New Provider</div>
           <div className="form-group">
-            <label className="form-label">Provider</label>
-            <select className="form-select" value={newProv.provider} onChange={e => setNewProv(p => ({ ...p, provider: e.target.value }))}>
-              {Object.entries(PROVIDER_LABELS)
-                .filter(([k]) => !existingProviders.includes(k))
-                .map(([k, v]) => <option key={k} value={k}>{v.icon} {v.label}</option>)}
+            <label className="form-label">Provider Type</label>
+            <select className="form-select" value={newProv.provider} onChange={e => setNewProv(p => ({ ...p, provider: e.target.value, base_url: PROVIDER_LABELS[e.target.value]?.defaultBase ?? '' }))}>
+              {Object.entries(PROVIDER_LABELS).map(([k, v]) => <option key={k} value={k}>{v.icon} {v.label}</option>)}
             </select>
           </div>
           <div className="form-group">
-            <label className="form-label">API Key</label>
-            <input className="form-input" type="password" value={newProv.api_key} onChange={e => setNewProv(p => ({ ...p, api_key: e.target.value }))} />
+            <label className="form-label">Model Name</label>
+            <input className="form-input" placeholder={PROVIDER_LABELS[newProv.provider]?.defaultModel} value={newProv.model_name} onChange={e => setNewProv(p => ({ ...p, model_name: e.target.value }))} />
           </div>
           <div className="form-group">
-            <label className="form-label">Model</label>
-            <input className="form-input" placeholder={PROVIDER_LABELS[newProv.provider]?.defaultModel} value={newProv.model_name} onChange={e => setNewProv(p => ({ ...p, model_name: e.target.value }))} />
+            <label className="form-label">Base URL <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(optional — overrides provider default)</span></label>
+            <input className="form-input" placeholder={PROVIDER_LABELS[newProv.provider]?.defaultBase ?? 'https://api.provider.com/v1'} value={newProv.base_url} onChange={e => setNewProv(p => ({ ...p, base_url: e.target.value }))} />
+          </div>
+          <div className="form-group">
+            <label className="form-label">API Key</label>
+            <input className="form-input" type="password" placeholder="Paste your API key…" value={newProv.api_key} onChange={e => setNewProv(p => ({ ...p, api_key: e.target.value }))} />
           </div>
           <div style={{ display: 'flex', gap: 10 }}>
             <button className="btn btn-primary" onClick={addProvider}><Save width={13} height={13} /> Add</button>

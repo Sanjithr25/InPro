@@ -21,12 +21,15 @@ export default function AgentsPage() {
   const fileInputRef              = useRef<HTMLInputElement>(null);
 
   // Dry run state
-  const [prompt, setPrompt]       = useState('');
-  const [running, setRunning]     = useState(false);
-  const [runResult, setRunResult] = useState<null | {
-    text: string; tokens?: { inputTokens: number; outputTokens: number };
-    tools?: string[]; latency?: number; error?: string;
+  const [prompt, setPrompt]         = useState('');
+  const [running, setRunning]       = useState(false);
+  const [streamText, setStreamText] = useState('');
+  const [runMeta, setRunMeta]       = useState<null | {
+    tokens?: { inputTokens: number; outputTokens: number };
+    tools?: string[]; error?: string;
+    provider?: string; model?: string;
   }>(null);
+  const outputRef = useRef<HTMLDivElement>(null);
 
   // Load everything
   const load = useCallback(async () => {
@@ -64,14 +67,16 @@ export default function AgentsPage() {
       tool_ids: (full.tools ?? []).map(t => t.id),
     });
     setIsNew(false);
-    setRunResult(null);
+    setStreamText('');
+    setRunMeta(null);
   };
 
   const newAgent = () => {
     setSelected(null);
     setForm(blank());
     setIsNew(true);
-    setRunResult(null);
+    setStreamText('');
+    setRunMeta(null);
   };
 
   const save = async () => {
@@ -111,20 +116,72 @@ export default function AgentsPage() {
   const run = async () => {
     if (!selected || !prompt.trim()) return;
     setRunning(true);
-    setRunResult(null);
+    setStreamText('');
+    setRunMeta(null);
+
+    const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
     try {
-      const r = await agentsApi.run(selected.id, prompt);
-      setRunResult({
-        text: r.error ?? (typeof r.output?.text === 'string'
-          ? r.output.text
-          : JSON.stringify(r.output, null, 2)),
-        tokens: r.tokenUsage,
-        tools: r.toolsUsed,
-        latency: r.latencyMs,
-        error: r.error,
+      const resp = await fetch(`${API}/api/agents/${selected.id}/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt }),
       });
-    } catch (e) {
-      setRunResult({ text: String(e), error: String(e) });
+      if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      const parseLine = (line: string) => {
+        if (!line.startsWith('data:')) return;
+        try {
+          const payload = JSON.parse(line.slice(5).trim());
+          return payload;
+        } catch { return null; }
+      };
+
+      let currentEvent = '';
+      let startMeta: { provider?: string; model?: string } = {};
+      let toolLog: string[] = [];
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (line.startsWith('event:')) {
+            currentEvent = line.slice(6).trim();
+          } else if (line.startsWith('data:')) {
+            const payload = parseLine(line);
+            if (!payload) continue;
+            if (currentEvent === 'start') {
+              startMeta = { provider: payload.provider, model: payload.model };
+            } else if (currentEvent === 'text') {
+              setStreamText(t => t + payload.delta);
+              // Auto-scroll
+              setTimeout(() => outputRef.current?.scrollTo(0, outputRef.current.scrollHeight), 0);
+            } else if (currentEvent === 'tool_start') {
+              toolLog.push(payload.name);
+              setStreamText(t => t + `\n[🔧 calling ${payload.name}...]\n`);
+            } else if (currentEvent === 'tool_result') {
+              setStreamText(t => t + `[✓ ${payload.name} done]\n`);
+            } else if (currentEvent === 'done') {
+              setRunMeta({
+                tokens: payload.inputTokens != null ? { inputTokens: payload.inputTokens, outputTokens: payload.outputTokens } : undefined,
+                tools: payload.tools,
+                ...startMeta,
+              });
+            } else if (currentEvent === 'error') {
+              setRunMeta({ error: payload.message, ...startMeta });
+            }
+          }
+        }
+      }
+    } catch (e: any) {
+      setRunMeta({ error: String(e) });
     } finally {
       setRunning(false);
     }
@@ -392,34 +449,44 @@ export default function AgentsPage() {
                   disabled={running || !prompt.trim()}
                 >
                   {running ? <span className="spinner" /> : <Play width={13} height={13} />}
-                  {running ? 'Running…' : 'Execute'}
+                  {running ? 'Streaming…' : 'Execute'}
                 </button>
 
-                {runResult && (
+                {(streamText || runMeta) && (
                   <div style={{ marginTop: 20 }}>
                     <div
+                      ref={outputRef}
                       className="output-panel"
-                      style={{ borderColor: runResult.error ? 'rgba(239,68,68,0.4)' : undefined }}
+                      style={{
+                        whiteSpace: 'pre-wrap',
+                        maxHeight: 360,
+                        overflowY: 'auto',
+                        borderColor: runMeta?.error ? 'rgba(239,68,68,0.4)' : undefined,
+                        fontFamily: 'monospace',
+                        fontSize: 13,
+                        lineHeight: 1.6,
+                      }}
                     >
-                      {runResult.text}
+                      {streamText || ' '}
+                      {running && <span style={{ opacity: 0.5, animation: 'pulse 1s infinite' }}>▍</span>}
                     </div>
-                    <div className="output-meta">
-                      {runResult.tokens && (
-                        <>
-                          <span><Hash width={11} height={11} /> {runResult.tokens.inputTokens} in</span>
-                          <span><Hash width={11} height={11} /> {runResult.tokens.outputTokens} out</span>
-                        </>
-                      )}
-                      {runResult.latency && (
-                        <span><Clock width={11} height={11} /> {runResult.latency}ms</span>
-                      )}
-                      {(runResult.tools ?? []).length > 0 && (
-                        <span><Zap width={11} height={11} /> {runResult.tools!.join(', ')}</span>
-                      )}
-                      {runResult.error && (
-                        <span style={{ color: 'var(--red)' }}>Error: {runResult.error}</span>
-                      )}
-                    </div>
+                    {runMeta && (
+                      <div className="output-meta">
+                        {runMeta.model && <span>🤖 {runMeta.provider} / {runMeta.model}</span>}
+                        {runMeta.tokens && (
+                          <>
+                            <span><Hash width={11} height={11} /> {runMeta.tokens.inputTokens} in</span>
+                            <span><Hash width={11} height={11} /> {runMeta.tokens.outputTokens} out</span>
+                          </>
+                        )}
+                        {(runMeta.tools ?? []).length > 0 && (
+                          <span><Zap width={11} height={11} /> {runMeta.tools!.join(', ')}</span>
+                        )}
+                        {runMeta.error && (
+                          <span style={{ color: 'var(--red)' }}>Error: {runMeta.error}</span>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

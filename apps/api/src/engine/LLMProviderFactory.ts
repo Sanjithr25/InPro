@@ -41,12 +41,22 @@ export interface ChatResponse {
   outputTokens: number;
 }
 
+export type StreamChunk =
+  | { type: 'text';      delta: string }
+  | { type: 'tool_call'; name: string; arguments: Record<string, unknown> }
+  | { type: 'done';      stopReason: string; inputTokens: number; outputTokens: number };
+
 export interface ChatProvider {
   chat(
     messages: ChatMessage[],
     tools?: ToolDefinition[],
     options?: { maxTokens?: number; temperature?: number }
   ): Promise<ChatResponse>;
+  chatStream(
+    messages: ChatMessage[],
+    tools?: ToolDefinition[],
+    options?: { maxTokens?: number; temperature?: number }
+  ): AsyncIterable<StreamChunk>;
 }
 
 // ─── Provider Requirements Map ────────────────────────────────────────────────
@@ -133,13 +143,55 @@ function makeOpenAICompatibleProvider(client: OpenAI, model: string): ChatProvid
         outputTokens: response.usage?.completion_tokens ?? 0,
       };
     },
+
+    async *chatStream(messages, tools = [], options = {}) {
+      const openaiTools: OpenAI.Chat.ChatCompletionTool[] = tools.map((t) => ({
+        type: 'function' as const,
+        function: { name: t.name, description: t.description, parameters: t.inputSchema as Record<string, unknown> },
+      }));
+      const stream = await client.chat.completions.create({
+        model,
+        messages: messages as OpenAI.Chat.ChatCompletionMessageParam[],
+        max_tokens: options.maxTokens ?? 4096,
+        temperature: options.temperature ?? 0.7,
+        stream: true,
+        ...(openaiTools.length > 0 && { tools: openaiTools }),
+      });
+      let inputTokens = 0;
+      let outputTokens = 0;
+      let stopReason = 'end_turn';
+      for await (const chunk of stream) {
+        const choice = chunk.choices?.[0];
+        if (!choice) continue;
+        if (choice.delta?.content) {
+          yield { type: 'text' as const, delta: choice.delta.content };
+        }
+        if (choice.delta?.tool_calls) {
+          for (const tc of choice.delta.tool_calls) {
+            if (tc.function?.name) {
+              try {
+                yield { type: 'tool_call' as const, name: tc.function.name, arguments: JSON.parse(tc.function.arguments ?? '{}') };
+              } catch { /* partial chunk */ }
+            }
+          }
+        }
+        if (choice.finish_reason) {
+          stopReason = choice.finish_reason === 'tool_calls' ? 'tool_use' : choice.finish_reason;
+        }
+        if (chunk.usage) {
+          inputTokens = chunk.usage.prompt_tokens ?? 0;
+          outputTokens = chunk.usage.completion_tokens ?? 0;
+        }
+      }
+      yield { type: 'done' as const, stopReason, inputTokens, outputTokens };
+    },
   };
 }
 
 // ─── Anthropic Provider ──────────────────────────────────────────────────────
 
-function makeAnthropicProvider(apiKey: string, model: string): ChatProvider {
-  const client = new Anthropic({ apiKey });
+function makeAnthropicProvider(apiKey: string, model: string, baseURL?: string): ChatProvider {
+  const client = new Anthropic({ apiKey, baseURL });
 
   return {
     async chat(messages, tools = [], options = {}) {
@@ -187,6 +239,42 @@ function makeAnthropicProvider(apiKey: string, model: string): ChatProvider {
         outputTokens: response.usage.output_tokens,
       };
     },
+
+    async *chatStream(messages, tools = [], options = {}) {
+      const systemMsg = messages.find(m => m.role === 'system');
+      const chatMessages = messages
+        .filter(m => m.role !== 'system')
+        .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+      const anthropicTools: Anthropic.Tool[] = tools.map((t) => ({
+        name: t.name, description: t.description,
+        input_schema: t.inputSchema as Anthropic.Tool['input_schema'],
+      }));
+      const stream = await client.messages.stream({
+        model,
+        max_tokens: options.maxTokens ?? 4096,
+        system: systemMsg?.content,
+        messages: chatMessages,
+        ...(anthropicTools.length > 0 && { tools: anthropicTools }),
+      });
+      for await (const event of stream) {
+        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+          yield { type: 'text' as const, delta: event.delta.text };
+        }
+      }
+      const final = await stream.finalMessage();
+      const toolCalls = final.content
+        .filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
+        .map(b => ({ name: b.name, arguments: b.input as Record<string, unknown> }));
+      for (const tc of toolCalls) {
+        yield { type: 'tool_call' as const, ...tc };
+      }
+      yield {
+        type: 'done' as const,
+        stopReason: final.stop_reason ?? 'end_turn',
+        inputTokens: final.usage.input_tokens,
+        outputTokens: final.usage.output_tokens,
+      };
+    },
   };
 }
 
@@ -229,7 +317,8 @@ export class LLMProviderFactory {
     // Create provider based on type
     switch (provider) {
       case 'anthropic': {
-        return makeAnthropicProvider(apiKey!, model);
+        console.log(`[LLMFactory] Initializing Anthropic SDK wrapper for model: ${model}${baseUrl ? ` (at ${baseUrl})` : ''}`);
+        return makeAnthropicProvider(apiKey!, model, baseUrl);
       }
 
       case 'llama-local':
@@ -241,6 +330,7 @@ export class LLMProviderFactory {
         // All these use OpenAI-compatible API
         const finalBaseUrl = baseUrl || requirements.defaultBaseUrl;
         const finalApiKey = apiKey || 'not-required';
+        console.log(`[LLMFactory] Initializing OpenAI SDK wrapper for provider: ${provider}, model: ${model}${finalBaseUrl ? ` (at ${finalBaseUrl})` : ''}`);
         const client = new OpenAI({ 
           apiKey: finalApiKey, 
           baseURL: finalBaseUrl,
@@ -261,7 +351,7 @@ export class LLMProviderFactory {
     if (override) return override;
 
     switch (provider) {
-      case 'anthropic': return config.llm.anthropicApiKey || undefined;
+      case 'anthropic': return (config.llm as any).anthropicApiKey || (config.llm as any).anthropicAuthToken || undefined;
       case 'openai': return config.llm.openaiApiKey || undefined;
       case 'groq': return config.llm.groqApiKey || undefined;
       case 'gemini': return config.llm.geminiApiKey || undefined;
@@ -282,6 +372,7 @@ export class LLMProviderFactory {
     if (requirements.defaultBaseUrl) return requirements.defaultBaseUrl;
 
     switch (provider) {
+      case 'anthropic': return (config.llm as any).anthropicBaseUrl;
       case 'ollama': return config.llm.ollamaBaseUrl;
       case 'groq': return config.llm.groqBaseUrl;
       case 'gemini': return config.llm.geminiBaseUrl;

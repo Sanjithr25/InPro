@@ -15,6 +15,12 @@ export interface ExecutionResult {
   tokenUsage?: { inputTokens: number; outputTokens: number };
   toolsUsed?: string[];
   latencyMs?: number;
+  providerInfo?: {
+    name: string;
+    model: string;
+    wrapper: 'anthropic' | 'openai' | 'unknown';
+    baseUrl?: string;
+  };
 }
 
 export interface IExecutableNode {

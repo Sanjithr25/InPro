@@ -28,6 +28,8 @@ export const config = {
     
     // API Keys (stored in .env, used as fallback if not in DB)
     anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
+    anthropicAuthToken: process.env.ANTHROPIC_AUTH_TOKEN ?? '',
+    anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL,
     openaiApiKey: process.env.OPENAI_API_KEY ?? '',
     groqApiKey: process.env.GROQ_API_KEY ?? '',
     geminiApiKey: process.env.GEMINI_API_KEY ?? '',
