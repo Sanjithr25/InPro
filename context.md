@@ -116,7 +116,9 @@ Single source of truth for all tool definitions and execution. **No `builtins.ts
 
 | Tool | Description |
 |---|---|
-| `web_search` | DuckDuckGo Instant Answers — returns `terminal` error on empty/failed responses (prevents model retry loop) |
+| `exa_search` | High-quality AI-centric neural search via Exa API |
+| `tavily_search` | Dedicated search engine optimized for AI agents |
+| `duckduckgo_search` | Vanilla unauthenticated instant text search |
 | `http_request` | Generic HTTP client — GET/POST/PUT/PATCH/DELETE with timeout |
 | `calculator` | Safe JS math expression evaluator — allowlist-based |
 | `read_file` | Read file contents with truncation support (`max_chars`) |
@@ -170,6 +172,7 @@ Stores provider configurations. One row per provider. `is_default = true` is use
 | `schema` | JSONB | JSON Schema for the tool's input (passed to LLM as function spec) |
 | `config` | JSONB | Key-value config (API keys, endpoints, timeouts, etc.) |
 | `is_enabled` | BOOLEAN | Only enabled tools are offered to agents |
+| `tool_group` | TEXT | Defines the category/grouping sidebar sections in the UI (e.g., "Search", "System") |
 
 #### `agent_tools`
 Join table — `(agent_id, tool_id)` composite PK.
@@ -278,10 +281,10 @@ All routes are under the Express API at `http://localhost:3001`.
 - **Dry Run card**: appears only for saved agents; prompt → streaming output + token/latency stats
 
 ### Tools Page (`/tools`)
-- Unified list — all DB tools (built-ins + custom) in one sidebar list
+- Unified list — all DB tools (built-ins + custom) organized by `tool_group` in the sidebar.
 - `BUILT-IN` badge on tools that map to a native executor
 - Built-ins are seeded automatically on server startup — no install flow
-- Click to configure (edit config, schema, enable/disable), `+` to create new
+- Click to configure (edit config, schema, enable/disable), edit group, `+` to create new
 
 ### Tasks Page (`/tasks`) ✅ NEW
 - **Sidebar**: task list with last-run status badge (`completed`/`failed`/`running`), step count, time since last run
