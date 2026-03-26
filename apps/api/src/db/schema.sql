@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS tools (
   description TEXT NOT NULL DEFAULT '',
   schema      JSONB NOT NULL DEFAULT '{}',   -- JSON Schema for LLM tool call
   config      JSONB NOT NULL DEFAULT '{}',   -- Encrypted k/v (API keys etc.)
+  tool_group  TEXT NOT NULL DEFAULT 'General',
   is_enabled  BOOLEAN NOT NULL DEFAULT true,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

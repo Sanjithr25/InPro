@@ -83,6 +83,7 @@ type Executor = (args: Args, config: Config, signal?: AbortSignal) => Promise<Re
 export interface ToolDefinitionEntry {
   name: string;
   description: string;
+  group: string;
   schema: Record<string, unknown>;
   defaultConfig: Config;
   executor: Executor;
@@ -90,63 +91,53 @@ export interface ToolDefinitionEntry {
 
 // ─── Built-in Executors ────────────────────────────────────────────────────────
 
-const execWebSearch: Executor = async (args, config, signal) => {
+const execExaSearch: Executor = async (args, config, signal) => {
   const query      = args.query as string;
   const numResults = Math.min(Math.max((args.num_results as number) ?? 5, 1), 10);
-  
-  const exaKey    = (config.exa_api_key as string)    || appConfig.tools.exaApiKey;
-  const tavilyKey = (config.tavily_api_key as string) || appConfig.tools.tavilyApiKey;
+  const apiKey = (config.exa_api_key as string) || appConfig.tools.exaApiKey;
 
-  if (!exaKey && !tavilyKey) {
-    return {
-      error: 'terminal',
-      message: 'No search API key (Exa or Tavily) is configured. Please add "exa_api_key" or "tavily_api_key" to tool config in the UI, or set environment variables.',
-      query,
-    };
+  if (!apiKey) {
+    return { error: 'terminal', message: 'Exa API key missing. Add "exa_api_key" to tool config or set EXA_API_KEY env.', query };
   }
 
-  // 1. Prefer Exa Search (Neural Search)
-  if (exaKey) {
-    try {
-      if (signal?.aborted) throw new Error('Aborted');
-      // @ts-ignore - some SDKs export as default, some as named constructor
-      const ExaClass = (Exa as any).default || Exa;
-      const exa = new ExaClass(exaKey);
-      
-      const response = await exa.searchAndContents(query, {
-        type: 'auto',
-        numResults,
-        text: { maxCharacters: 15000 }
-      });
-
-      const results = (response.results || []).map((r: any) => ({
-        url: r.url,
-        title: r.title,
-        content: r.text || r.highlights?.[0] || 'No content found.',
-        published_date: r.publishedDate
-      }));
-
-      const snippets = results.map((r: any) => `[Source: ${r.url}]\nTitle: ${r.title}\n${r.content.slice(0, 4000)}`);
-
-      return {
-        query,
-        provider: 'Exa',
-        results: snippets,
-        result_count: results.length,
-        raw: results
-      };
-    } catch (e: any) {
-      if (e.message === 'Aborted') throw e;
-      console.error('[ToolRegistry] Exa Search failed:', e);
-      // Fallback to Tavily if enabled and Exa fails
-      if (!tavilyKey) return { error: 'terminal', message: `Exa Search failed: ${e.message}`, query };
-    }
-  }
-
-  // 2. Fallback / Alternative: Tavily Search
   try {
     if (signal?.aborted) throw new Error('Aborted');
-    const tvly = tavily({ apiKey: tavilyKey });
+    const ExaClass = (Exa as any).default || Exa;
+    const exa = new ExaClass(apiKey);
+    
+    const response = await exa.searchAndContents(query, {
+      type: 'auto',
+      numResults,
+      text: { maxCharacters: 15000 }
+    });
+
+    const results = (response.results || []).map((r: any) => ({
+      url: r.url,
+      title: r.title,
+      content: r.text || r.highlights?.[0] || 'No content found.',
+    }));
+
+    const snippets = results.map((r: any) => `[Source: ${r.url}]\nTitle: ${r.title}\n${r.content.slice(0, 4000)}`);
+
+    return { query, provider: 'Exa', results: snippets, result_count: results.length };
+  } catch (e: any) {
+    if (e.message === 'Aborted') throw e;
+    return { error: 'terminal', message: `Exa Search failed: ${e.message}`, query };
+  }
+};
+
+const execTavilySearch: Executor = async (args, config, signal) => {
+  const query      = args.query as string;
+  const numResults = Math.min(Math.max((args.num_results as number) ?? 5, 1), 10);
+  const apiKey = (config.tavily_api_key as string) || appConfig.tools.tavilyApiKey;
+
+  if (!apiKey) {
+    return { error: 'terminal', message: 'Tavily API key missing. Add "tavily_api_key" to tool config or set TAVILY_API_KEY env.', query };
+  }
+
+  try {
+    if (signal?.aborted) throw new Error('Aborted');
+    const tvly = tavily({ apiKey });
     const response = await tvly.search(query, {
       maxResults: numResults,
       searchDepth: 'advanced',
@@ -160,21 +151,13 @@ const execWebSearch: Executor = async (args, config, signal) => {
       results.push(...snippets);
     }
 
-    if (results.length === 0) {
-      return { error: 'terminal', query, results: [], message: 'No results found via Tavily.' };
-    }
-
     return { 
-      query, 
-      provider: 'Tavily',
-      answer: response.answer, 
-      results: results.slice(0, numResults + 1), 
-      result_count: results.length 
+      query, provider: 'Tavily', answer: response.answer, 
+      results: results.slice(0, numResults + 1), result_count: results.length 
     };
-
   } catch (e: any) {
     if (e.message === 'Aborted') throw e;
-    return { error: 'terminal', message: `Search API failed: ${e.message}`, query };
+    return { error: 'terminal', message: `Tavily Search failed: ${e.message}`, query };
   }
 };
 
@@ -376,26 +359,41 @@ const execGetDatetime: Executor = async (args, _config, _signal) => {
 
 const BUILT_IN_TOOLS: ToolDefinitionEntry[] = [
   {
-    name: 'web_search',
-    description:
-      'Use when you need current facts, news, or deep information not in your training data. ' +
-      'Powered by Exa (Neural Search) and Tavily. Returns ranked relevant snippets and deep answers. Do NOT use for URL fetching — use http_request for that.',
+    name: 'exa_search',
+    description: 'Neural web search by Exa. Great for finding relevant code, papers, and deep content. Returns full text snippets.',
+    group: 'Web Search',
     schema: {
       type: 'object',
       properties: {
-        query:       { type: 'string', description: 'Specific search query. Be precise.' },
-        num_results: { type: 'number', description: 'Results to return (1–10). Default: 5.', default: 5, minimum: 1, maximum: 10 },
+        query:       { type: 'string', description: 'Specific search query.' },
+        num_results: { type: 'number', description: 'Results count (1-10).', default: 5 },
       },
       required: ['query'],
     },
-    defaultConfig: { exa_api_key: '', tavily_api_key: '' },
-    executor: execWebSearch,
+    defaultConfig: { exa_api_key: '' },
+    executor: execExaSearch,
+  },
+  {
+    name: 'tavily_search',
+    description: 'Web search optimized for LLMs. Returns ranked snippets and synthetic answers.',
+    group: 'Web Search',
+    schema: {
+      type: 'object',
+      properties: {
+        query:       { type: 'string', description: 'Specific search query.' },
+        num_results: { type: 'number', description: 'Results count (1-10).', default: 5 },
+      },
+      required: ['query'],
+    },
+    defaultConfig: { tavily_api_key: '' },
+    executor: execTavilySearch,
   },
   {
     name: 'http_request',
     description:
       'Use to call external REST APIs when you have a specific URL. Returns status, ok flag, and parsed response body. ' +
       'Do NOT use for web search — use web_search for that.',
+    group: 'Built-in Utils',
     schema: {
       type: 'object',
       properties: {
@@ -415,6 +413,7 @@ const BUILT_IN_TOOLS: ToolDefinitionEntry[] = [
       'Use for precise arithmetic and algebra when exact computation matters. ' +
       'Supports +, -, *, /, %, **, Math.sqrt, Math.pow, Math.floor, Math.ceil, Math.abs, Math.PI. ' +
       'Do NOT use for symbolic math or unit conversion.',
+    group: 'Built-in Utils',
     schema: {
       type: 'object',
       properties: {
@@ -428,14 +427,15 @@ const BUILT_IN_TOOLS: ToolDefinitionEntry[] = [
   {
     name: 'read_file',
     description:
-      'Use to read the contents of a file from disk. Returns content and size. ' +
-      'Large files are truncated — check the truncated flag. Use absolute paths when possible.',
+      'Reads content from a text file. Supports line-range partial reads. ' +
+      'Useful for analyzing large scripts or logs.',
+    group: 'File System',
     schema: {
       type: 'object',
       properties: {
-        path:      { type: 'string', description: 'File path — absolute or relative to server working directory.' },
-        encoding:  { type: 'string', enum: ['utf-8', 'base64', 'hex'], description: 'File encoding. Default: utf-8.', default: 'utf-8' },
-        max_chars: { type: 'number', description: 'Truncate at this many characters. Default: 8000.', default: 8000 },
+        path:      { type: 'string', description: 'Absolute path to file.' },
+        encoding:  { type: 'string', enum: ['utf-8', 'ascii', 'base64'], description: 'Default: utf-8.', default: 'utf-8' },
+        max_chars: { type: 'number', description: 'Limit read size to prevent context overflow. Default: 8000.' },
       },
       required: ['path'],
     },
@@ -444,12 +444,13 @@ const BUILT_IN_TOOLS: ToolDefinitionEntry[] = [
   },
   {
     name: 'write_file',
-    description: 'Use to create or overwrite a file with new content. Returns bytes written.',
+    description: 'Creates or overwrites a file with content. Parent directories are created automatically.',
+    group: 'File System',
     schema: {
       type: 'object',
       properties: {
-        path:    { type: 'string', description: 'File path to write.' },
-        content: { type: 'string', description: 'Full text content to write.' },
+        path:    { type: 'string', description: 'Absolute path to write.' },
+        content: { type: 'string', description: 'Text or code to save.' },
       },
       required: ['path', 'content'],
     },
@@ -458,11 +459,12 @@ const BUILT_IN_TOOLS: ToolDefinitionEntry[] = [
   },
   {
     name: 'delete_file',
-    description: 'Use to permanently delete a file from the file system.',
+    description: 'Permanently deletes a file from disk. Use with caution.',
+    group: 'File System',
     schema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'File path to delete.' },
+        path: { type: 'string', description: 'Absolute path to delete.' },
       },
       required: ['path'],
     },
@@ -471,11 +473,12 @@ const BUILT_IN_TOOLS: ToolDefinitionEntry[] = [
   },
   {
     name: 'list_directory',
-    description: 'Use to list the contents of a directory (like ls).',
+    description: 'Lists all files and subdirectories in a folder. Use to explore the workspace structure.',
+    group: 'File System',
     schema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Directory path to list.' },
+        path: { type: 'string', description: 'Absolute path to the directory.' },
       },
       required: ['path'],
     },
@@ -484,43 +487,44 @@ const BUILT_IN_TOOLS: ToolDefinitionEntry[] = [
   },
   {
     name: 'find_files',
-    description: 'Use to find files by glob pattern (e.g. "**/*.ts").',
+    description: 'Searches for files matching a glob pattern (e.g. "**/*.js") starting from a root directory.',
+    group: 'File System',
     schema: {
       type: 'object',
       properties: {
-        pattern: { type: 'string', description: 'Glob pattern to search.' },
-        cwd:     { type: 'string', description: 'Directory to search within.' },
+        pattern: { type: 'string', description: 'Glob pattern (e.g. "**/*.ts", "src/**/test_*").' },
+        cwd:     { type: 'string', description: 'Search root path. Default: current directory.' },
       },
       required: ['pattern'],
     },
-    defaultConfig: {},
+    defaultConfig: { allowed_dirs: [] },
     executor: execFindFiles,
   },
   {
     name: 'search_files',
-    description: 'Use to search for content inside files using Regex (grep equivalent). Skips node_modules.',
+    description: 'Grep-like search across files. Finds lines matching a regex pattern inside the file content.',
+    group: 'File System',
     schema: {
       type: 'object',
       properties: {
-        query:        { type: 'string', description: 'Regex query to find.' },
-        file_pattern: { type: 'string', description: 'Glob pattern for files to check. Default: **/*.*' },
-        cwd:          { type: 'string', description: 'Directory to search within.' },
+        query:        { type: 'string', description: 'Regex pattern to search for.' },
+        file_pattern: { type: 'string', description: 'File pattern filter. Default: **/*.*' },
+        cwd:          { type: 'string', description: 'Search root path.' },
       },
       required: ['query'],
     },
-    defaultConfig: {},
+    defaultConfig: { allowed_dirs: [] },
     executor: execSearchFiles,
   },
   {
     name: 'run_command',
-    description:
-      'Use to run shell commands and capture stdout/stderr. Enable only for trusted agents. ' +
-      'Prefer idempotent read-only commands when possible.',
+    description: 'Executes a shell command on the host. Highly powerful — only use commands you know are safe.',
+    group: 'Built-in Utils',
     schema: {
       type: 'object',
       properties: {
-        command: { type: 'string', description: 'Full shell command string.' },
-        cwd:     { type: 'string', description: 'Working directory. Defaults to server cwd.' },
+        command: { type: 'string', description: 'Shell command to execute.' },
+        cwd:     { type: 'string', description: 'Working directory for the command.' },
       },
       required: ['command'],
     },
@@ -532,6 +536,7 @@ const BUILT_IN_TOOLS: ToolDefinitionEntry[] = [
     description:
       'Use when you need the current timestamp. Returns datetime in the requested format and timezone. ' +
       'Prefer "iso" for machine use, "human" for user-facing output.',
+    group: 'Built-in Utils',
     schema: {
       type: 'object',
       properties: {
@@ -549,6 +554,8 @@ const BUILT_IN_TOOLS: ToolDefinitionEntry[] = [
 const EXECUTOR_MAP = new Map<string, Executor>(
   BUILT_IN_TOOLS.map(t => [t.name, t.executor])
 );
+// Support legacy web_search by mapping it to tavily_search
+EXECUTOR_MAP.set('web_search', execTavilySearch);
 
 // ─── ToolRegistry ──────────────────────────────────────────────────────────────
 
@@ -558,15 +565,25 @@ export class ToolRegistry {
    * Called once on server startup. Safe to call multiple times (idempotent).
    */
   static async seed(): Promise<void> {
+    // 1. Cleanup redundant/legacy tools
+    const redundant = ['web_search', 'websearch', 'exa', 'tavilly'];
+    for (const name of redundant) {
+      await db.query(`DELETE FROM tools WHERE name = $1`, [name]);
+    }
+
+    // 2. Seed active built-in tools
     for (const tool of BUILT_IN_TOOLS) {
       await db.query(
-        `INSERT INTO tools (name, description, schema, config, is_enabled)
-         VALUES ($1, $2, $3, $4, true)
-         ON CONFLICT (name) DO NOTHING`,
-        [tool.name, tool.description, JSON.stringify(tool.schema), JSON.stringify(tool.defaultConfig)]
+        `INSERT INTO tools (name, description, schema, config, tool_group, is_enabled)
+         VALUES ($1, $2, $3, $4, $5, true)
+         ON CONFLICT (name) DO UPDATE SET
+            description = EXCLUDED.description,
+            schema = EXCLUDED.schema,
+            tool_group = EXCLUDED.tool_group`,
+        [tool.name, tool.description, JSON.stringify(tool.schema), JSON.stringify(tool.defaultConfig), tool.group]
       );
     }
-    console.log(`[ToolRegistry] Seeded ${BUILT_IN_TOOLS.length} built-in tools.`);
+    console.log(`[ToolRegistry] Seeded ${BUILT_IN_TOOLS.length} built-in tools (Cleaned redundant search tools).`);
   }
 
   /**

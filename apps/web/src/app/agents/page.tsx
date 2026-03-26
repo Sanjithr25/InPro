@@ -219,18 +219,26 @@ export default function AgentsPage() {
       ? `${defaultProvider.provider} — ${defaultProvider.model_name} (default)`
       : 'System default';
 
-  // Group tools for selection UI
-  const groupedTools: { title: string; items: ToolRow[] }[] = [
-    { title: 'File System', items: [] },
-    { title: 'Built-in Utils', items: [] },
-    { title: 'Custom Extensions', items: [] },
-  ];
-  const fsNames = ['read_file', 'write_file', 'delete_file', 'list_directory', 'find_files', 'search_files'];
-  for (const t of tools) {
-    if (fsNames.includes(t.name)) groupedTools[0].items.push(t);
-    else if (t.is_builtin)        groupedTools[1].items.push(t);
-    else                          groupedTools[2].items.push(t);
-  }
+  // Group tools for selection UI dynamically from DB tool_group
+  const groupsRaw = tools.reduce<Record<string, ToolRow[]>>((acc, t) => {
+    const g = t.tool_group || 'General';
+    if (!acc[g]) acc[g] = [];
+    acc[g].push(t);
+    return acc;
+  }, {});
+
+  const groupedTools = Object.keys(groupsRaw)
+    .sort((a, b) => {
+      if (a === 'Web Search') return -1;
+      if (b === 'Web Search') return 1;
+      if (a === 'File System') return -1;
+      if (b === 'File System') return 1;
+      return a.localeCompare(b);
+    })
+    .map(title => ({
+      title,
+      items: groupsRaw[title]
+    }));
 
   return (
     <div className="two-panel">

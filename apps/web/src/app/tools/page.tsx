@@ -27,7 +27,7 @@ const newEntry = (): ConfigEntry => ({
 });
 
 const blankTool = (): Partial<ToolRow> & { entries: ConfigEntry[] } => ({
-  name: '', description: '', is_enabled: true,
+  name: '', description: '', tool_group: 'General', is_enabled: true,
   schema: {}, config: {}, is_builtin: false, entries: [],
 });
 
@@ -189,12 +189,33 @@ export default function ToolsPage() {
     t.description.toLowerCase().includes(search.toLowerCase())
   );
 
-  const FS_NAMES = new Set(['read_file', 'write_file', 'delete_file', 'list_directory', 'find_files', 'search_files']);
-  const groups = [
-    { title: 'File System', icon: '📁', items: filtered.filter(t => FS_NAMES.has(t.name)) },
-    { title: 'Built-ins',   icon: '⚡', items: filtered.filter(t => t.is_builtin && !FS_NAMES.has(t.name)) },
-    { title: 'Custom',      icon: '🔌', items: filtered.filter(t => !t.is_builtin && !FS_NAMES.has(t.name)) },
-  ];
+  const groupsRaw = filtered.reduce<Record<string, ToolRow[]>>((acc, t) => {
+    const g = t.tool_group || 'General';
+    if (!acc[g]) acc[g] = [];
+    acc[g].push(t);
+    return acc;
+  }, {});
+
+  const groupIcons: Record<string, string> = {
+    'Web Search': '🌐',
+    'File System': '📁',
+    'Built-in Utils': '⚡',
+    'General': '🔌',
+  };
+
+  const groups = Object.keys(groupsRaw)
+    .sort((a, b) => {
+      if (a === 'Web Search') return -1;
+      if (b === 'Web Search') return 1;
+      if (a === 'File System') return -1;
+      if (b === 'File System') return 1;
+      return a.localeCompare(b);
+    })
+    .map(title => ({
+      title,
+      icon: groupIcons[title] || '🛠️',
+      items: groupsRaw[title]
+    }));
 
   // ── Counts ──────────────────────────────────────────────────────────────────
   const activeCount  = tools.filter(t => t.is_enabled).length;
@@ -206,6 +227,7 @@ export default function ToolsPage() {
     setSelected(full);
     setForm({
       name: full.name, description: full.description,
+      tool_group: full.tool_group,
       is_enabled: full.is_enabled, is_builtin: full.is_builtin,
       schema: full.schema ?? {}, config: full.config ?? {},
       entries: configToEntries(full.config ?? {}),
@@ -230,6 +252,7 @@ export default function ToolsPage() {
       const payload = {
         name: form.name ?? '',
         description: form.description ?? '',
+        tool_group: form.tool_group ?? 'General',
         is_enabled: form.is_enabled ?? true,
         schema: form.schema ?? {},
         config,
@@ -454,19 +477,30 @@ export default function ToolsPage() {
             <div className="card">
               <div className="card-title"><Plug width={16} height={16} /> Identity</div>
 
-              <div className="form-group">
-                <label className="form-label">Name</label>
-                <input
-                  id="tool-name"
-                  className="form-input"
-                  placeholder="e.g. slack_notifier, weather_api, sql_query…"
-                  value={form.name}
-                  onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-                />
-                <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                  Use snake_case. Names matching built-ins (web_search, calculator, http_request, etc.) run natively.
-                </p>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                <div className="form-group">
+                  <label className="form-label">Tool Name</label>
+                  <input
+                    className="form-input"
+                    placeholder="e.g. search_web"
+                    disabled={form.is_builtin}
+                    value={form.name}
+                    onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Group / Category</label>
+                  <input
+                    className="form-input"
+                    placeholder="e.g. Web Search, File System…"
+                    value={form.tool_group}
+                    onChange={e => setForm(f => ({ ...f, tool_group: e.target.value }))}
+                  />
+                </div>
               </div>
+              <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                Use snake_case. Names matching built-ins (web_search, calculator, http_request, etc.) run natively.
+              </p>
 
               <div className="form-group">
                 <label className="form-label">

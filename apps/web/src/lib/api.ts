@@ -47,11 +47,11 @@ export type ToolRow = {
   id: string;
   name: string;
   description: string;
+  tool_group: string;
   is_enabled: boolean;
-  /** true when name matches a known built-in executor in ToolRegistry */
-  is_builtin: boolean;
-  schema: Record<string, unknown>;
-  config: Record<string, unknown>;
+  is_builtin?: boolean; // Virtual field added by API
+  schema?: Record<string, unknown>;
+  config?: Record<string, unknown>;
   created_at: string;
 };
 
