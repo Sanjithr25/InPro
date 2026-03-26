@@ -22,6 +22,7 @@ import { join, isAbsolute, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import db from '../db/client.js';
 import { tavily } from '@tavily/core';
+import Exa from 'exa-js';
 import { config as appConfig } from '../config.js';
 import { glob } from 'glob';
 
@@ -93,20 +94,59 @@ const execWebSearch: Executor = async (args, config, signal) => {
   const query      = args.query as string;
   const numResults = Math.min(Math.max((args.num_results as number) ?? 5, 1), 10);
   
-  // Extract API key from tool DB config or environment
-  const apiKey = (config.tavily_api_key as string) || appConfig.tools.tavilyApiKey;
+  const exaKey    = (config.exa_api_key as string)    || appConfig.tools.exaApiKey;
+  const tavilyKey = (config.tavily_api_key as string) || appConfig.tools.tavilyApiKey;
 
-  if (!apiKey) {
+  if (!exaKey && !tavilyKey) {
     return {
       error: 'terminal',
-      message: 'Tavily API key is not configured. Add "tavily_api_key" to the web_search tool config in the UI, or set TAVILY_API_KEY in the .env file.',
+      message: 'No search API key (Exa or Tavily) is configured. Please add "exa_api_key" or "tavily_api_key" to tool config in the UI, or set environment variables.',
       query,
     };
   }
 
+  // 1. Prefer Exa Search (Neural Search)
+  if (exaKey) {
+    try {
+      if (signal?.aborted) throw new Error('Aborted');
+      // @ts-ignore - some SDKs export as default, some as named constructor
+      const ExaClass = (Exa as any).default || Exa;
+      const exa = new ExaClass(exaKey);
+      
+      const response = await exa.searchAndContents(query, {
+        type: 'auto',
+        numResults,
+        text: { maxCharacters: 15000 }
+      });
+
+      const results = (response.results || []).map((r: any) => ({
+        url: r.url,
+        title: r.title,
+        content: r.text || r.highlights?.[0] || 'No content found.',
+        published_date: r.publishedDate
+      }));
+
+      const snippets = results.map((r: any) => `[Source: ${r.url}]\nTitle: ${r.title}\n${r.content.slice(0, 4000)}`);
+
+      return {
+        query,
+        provider: 'Exa',
+        results: snippets,
+        result_count: results.length,
+        raw: results
+      };
+    } catch (e: any) {
+      if (e.message === 'Aborted') throw e;
+      console.error('[ToolRegistry] Exa Search failed:', e);
+      // Fallback to Tavily if enabled and Exa fails
+      if (!tavilyKey) return { error: 'terminal', message: `Exa Search failed: ${e.message}`, query };
+    }
+  }
+
+  // 2. Fallback / Alternative: Tavily Search
   try {
     if (signal?.aborted) throw new Error('Aborted');
-    const tvly = tavily({ apiKey });
+    const tvly = tavily({ apiKey: tavilyKey });
     const response = await tvly.search(query, {
       maxResults: numResults,
       searchDepth: 'advanced',
@@ -114,37 +154,27 @@ const execWebSearch: Executor = async (args, config, signal) => {
     });
 
     const results: string[] = [];
-    if (response.answer) {
-      results.push(`Answer: ${response.answer}`);
-    }
-
-    if (response.results && response.results.length > 0) {
+    if (response.answer) results.push(`Answer: ${response.answer}`);
+    if (response.results?.length) {
       const snippets = response.results.map((r: any) => `[Source: ${r.url}]\n${r.content}`);
       results.push(...snippets);
     }
 
     if (results.length === 0) {
-      return {
-        error: 'terminal',
-        query,
-        results: [],
-        message: 'No results found for this query via Tavily. Proceed using training data if possible.',
-      };
+      return { error: 'terminal', query, results: [], message: 'No results found via Tavily.' };
     }
 
     return { 
       query, 
+      provider: 'Tavily',
       answer: response.answer, 
       results: results.slice(0, numResults + 1), 
       result_count: results.length 
     };
 
   } catch (e: any) {
-    return {
-      error: 'terminal',
-      message: `Tavily Search API failed: ${e.message}`,
-      query,
-    };
+    if (e.message === 'Aborted') throw e;
+    return { error: 'terminal', message: `Search API failed: ${e.message}`, query };
   }
 };
 
@@ -349,7 +379,7 @@ const BUILT_IN_TOOLS: ToolDefinitionEntry[] = [
     name: 'web_search',
     description:
       'Use when you need current facts, news, or deep information not in your training data. ' +
-      'Powered by Tavily Search API. Returns ranked relevant snippets and deep answers. Do NOT use for URL fetching — use http_request for that.',
+      'Powered by Exa (Neural Search) and Tavily. Returns ranked relevant snippets and deep answers. Do NOT use for URL fetching — use http_request for that.',
     schema: {
       type: 'object',
       properties: {
@@ -358,7 +388,7 @@ const BUILT_IN_TOOLS: ToolDefinitionEntry[] = [
       },
       required: ['query'],
     },
-    defaultConfig: { tavily_api_key: '' },
+    defaultConfig: { exa_api_key: '', tavily_api_key: '' },
     executor: execWebSearch,
   },
   {

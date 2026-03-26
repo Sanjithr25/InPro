@@ -43,5 +43,6 @@ export const config = {
 
   tools: {
     tavilyApiKey: process.env.TAVILY_API_KEY ?? '',
+    exaApiKey:    process.env.EXA_API_KEY    ?? '',
   }
 } as const;
