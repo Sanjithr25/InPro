@@ -121,7 +121,7 @@ export default function TasksPage() {
     if (!form.description.trim() || genAgentIds.length === 0) return;
     setGenerating(true);
     try {
-      const { steps } = await tasksApi.generateWorkflow(form.description, genAgentIds);
+      const { steps } = await tasksApi.generateWorkflow(form.description, genAgentIds, form.llm_provider_id);
       setForm(f => ({ ...f, entries: steps }));
     } catch (e: any) {
       alert(`Workflow generation failed: ${e.message}`);

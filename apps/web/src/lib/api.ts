@@ -106,10 +106,10 @@ export const tasksApi = {
       toolsUsed?: string[];
       error?: string;
     }>(`/api/tasks/${id}/run`, { method: 'POST', body: JSON.stringify({ prompt: prompt ?? '' }) }),
-  generateWorkflow: (description: string, agentIds: string[]) =>
+  generateWorkflow: (description: string, agentIds: string[], llmProviderId?: string | null) =>
     req<{ steps: WorkflowStep[] }>('/api/tasks/generate-workflow', {
       method: 'POST',
-      body: JSON.stringify({ description, agentIds }),
+      body: JSON.stringify({ description, agentIds, llmProviderId }),
     }),
   dryRun: (id: string, prompt?: string) =>
     req<{ success: boolean; output: { text: string; steps: number }; error?: string }>(

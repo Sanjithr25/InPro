@@ -41,7 +41,7 @@ const TaskSchema = z.object({
 router.get('/', handle(async (_req, res) => {
   const { rows } = await pool.query(`
     SELECT
-      t.id, t.name, t.description, t.created_at,
+      t.id, t.name, t.description, t.created_at, t.workflow_definition,
       jsonb_array_length(t.workflow_definition) AS step_count,
       (
         SELECT er.status FROM execution_runs er
@@ -141,11 +141,12 @@ router.post('/:id/dry-run', handle(async (req, res) => {
 }));
 
 // ─── POST /api/tasks/generate-workflow ────────────────────────────────────────
-// Uses the default LLM to generate workflow steps from a task description + agents.
+// Uses the specified or default LLM to generate workflow steps from a task description + agents.
 router.post('/generate-workflow', handle(async (req, res) => {
-  const { description, agentIds } = z.object({
+  const { description, agentIds, llmProviderId } = z.object({
     description: z.string().min(1),
     agentIds: z.array(z.string().uuid()).min(1),
+    llmProviderId: z.string().uuid().optional().nullable(),
   }).parse(req.body);
 
   // Load agent names
@@ -155,15 +156,23 @@ router.post('/generate-workflow', handle(async (req, res) => {
   );
   const agents = agentsRes.rows;
 
-  // Load default LLM provider
-  const settingsRes = await pool.query(
-    `SELECT * FROM llm_settings WHERE is_default = true LIMIT 1`
-  );
-  if (settingsRes.rows.length === 0) {
-    res.status(503).json({ error: 'No default LLM provider configured.' });
+  // Load LLM provider settings (specific or default)
+  let s: any;
+  if (llmProviderId) {
+    const res = await pool.query(`SELECT * FROM llm_settings WHERE id = $1`, [llmProviderId]);
+    s = res.rows[0];
+  }
+
+  if (!s) {
+    const res = await pool.query(`SELECT * FROM llm_settings WHERE is_default = true LIMIT 1`);
+    s = res.rows[0];
+  }
+
+  if (!s) {
+    res.status(503).json({ error: 'No LLM provider configured. Please add one in Settings.' });
     return;
   }
-  const s = settingsRes.rows[0];
+
   const llm = LLMProviderFactory.create({
     provider: s.provider,
     apiKey:   s.api_key,
@@ -177,23 +186,23 @@ router.post('/generate-workflow', handle(async (req, res) => {
 
   const systemPrompt = `You are a workflow planner. Given a task description and a list of AI agents, generate a linear step-by-step workflow. Each step must be assigned to one of the provided agents.
 
-CRITICAL: Your entire response must be ONLY a valid JSON array. Do NOT include any explanation, markdown, code fences, or preamble. Start your response with [ and end with ].
+  CRITICAL: Your entire response must be ONLY a valid JSON array. Do NOT include any explanation, markdown, code fences, or preamble. Start your response with [ and end with ].
 
-Format:
-[
-  {
-    "agentId": "<agent id from the list>",
-    "stepName": "<short step title>",
-    "description": "<what this agent should do in this step, 1-2 sentences>"
-  }
-]`;
+  Format:
+  [
+    {
+      "agentId": "<agent id from the list>",
+      "stepName": "<short step title>",
+      "description": "<what this agent should do in this step, 2-3 sentences>"
+    }
+  ]`;
 
   const userPrompt = `Task: ${description}
 
-Available agents:
-${agentList}
+  Available agents:
+  ${agentList}
 
-Generate a workflow of ${Math.min(agents.length, 5)} steps using these agents.`;
+  Generate a workflow of ${Math.min(agents.length, 5)} steps using these agents.`;
 
   const response = await llm.chat(
     [
@@ -201,7 +210,7 @@ Generate a workflow of ${Math.min(agents.length, 5)} steps using these agents.`;
       { role: 'user',   content: userPrompt },
     ],
     [],
-    { maxTokens: 1024 }
+    { maxTokens: 8192 }
   );
 
   // Parse LLM output — robustly extract JSON array from response

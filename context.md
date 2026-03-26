@@ -2,7 +2,7 @@
 
 **Purpose:** This file is the central source of truth for the AI Workflow Platform project. All engineers and AI agents working on this codebase must adhere to the architecture, database schema, and abstractions defined here.
 
-**Last updated:** 2026-03-25
+**Last updated:** 2026-03-26
 
 ---
 
@@ -265,6 +265,7 @@ All routes are under the Express API at `http://localhost:3001`.
 | Agents | `/agents` | ✅ Full CRUD + Dry Run + Streaming |
 | Tools | `/tools` | ✅ Full CRUD — unified list, built-ins pre-seeded |
 | Tasks | `/tasks` | ✅ Full CRUD + AI Workflow Generator + Run |
+| Task Runs | `/task-runs` | ✅ Live execution tracker, polling with expanding timeline |
 | Scheduler | `/scheduler` | 🔲 Stub — Phase 4 |
 | Run History | `/history` | 🔲 Stub — Phase 5 |
 | LLM Settings | `/settings` | ✅ Full CRUD |
@@ -288,7 +289,12 @@ All routes are under the Express API at `http://localhost:3001`.
 - **AI Workflow Generator card**: agent chip-select → LLM plans steps from description
 - **Workflow Steps editor**: drag-to-reorder, add/remove, per-step agent selector + description
 - **Agent flow preview**: `Agent A → Agent B → Agent C` visualization
-- **Run Task card**: optional initial prompt → executes all steps → per-step accordion output
+
+### Task Runs Page (`/task-runs`) ✅ NEW
+- **Live tracker**: Lists all tasks and their active or previous runs.
+- **Robust Polling**: Adaptive frontend polling (3s active / 8s idle) protected with global try/catch to survive 429 rate limit errors without crashing the React application.
+- **Detailed Execution Timeline**: Clicking a running/completed task card expands it downwards to visualize step-by-step progress, showing which agent is Waiting, Running (spinner), Completed, or Failed, along with exact durations (e.g., `Finished in 57s`).
+- **Kill switch**: Safe UI button to abort running task cycles.
 
 ### Settings Page (`/settings`)
 - Cards per LLM provider (Ollama, Groq, OpenAI, Anthropic, Gemini, Custom)
@@ -391,5 +397,7 @@ npm run dev:web   # → http://localhost:3000
 - **web_search uses terminal errors** — DuckDuckGo sometimes returns empty body (causes `SyntaxError` on `res.json()`). All failure paths return `error: 'terminal'` with explicit "do not retry" instructions to prevent the model from looping.
 - **Task step prompts are context-aware** — Step 1 gets the task description + user prompt. All subsequent steps get the previous step's full output injected as context, enabling natural research → synthesize → report chains.
 - **Execution tree is fully logged** — every `TaskNode` run creates a parent `execution_run` with child `execution_run` records per agent step, linked via `parent_run_id`. Ready for the Run History UI in Phase 5.
+- **Kill signals override autonomous completion** — if `ctx.abortSignal?.aborted` fires inside `TaskNode` or `AgentNode`, the node saves partial output data but securely respects the DB's `.status = 'failed'` (set by the kill route) to prevent resurrected tasks.
+- **API rate limits increased** — `express-rate-limit` inside `index.ts` allows 5000 requests to properly support the robust frontend interval loop fetching updates `taskRunsApi.get` for expanded active runs without returning 429 error bodies that break Next.js JSON parser.
 - **agent_group** — field on agents used purely for UI sidebar grouping. Not used in execution.
 - **Groq supported** — `groq` is a valid provider in `llm_settings`. Uses `openai` npm package with `baseURL: https://api.groq.com/openai/v1`.

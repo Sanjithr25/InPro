@@ -180,12 +180,19 @@ export class AgentNode implements IExecutableNode {
         },
       };
 
-      if (runId) {
+      if (runId && !ctx.abortSignal?.aborted) {
         await db.query(
           `UPDATE execution_runs
            SET status = 'completed', ended_at = NOW(), output_data = $1, error_message = NULL
            WHERE id = $2`,
           [JSON.stringify(finalResult), runId]
+        );
+      } else if (runId && ctx.abortSignal?.aborted) {
+        await db.query(
+          `UPDATE execution_runs
+           SET output_data = $1
+           WHERE id = $2`,
+           [JSON.stringify(finalResult), runId]
         );
       }
 

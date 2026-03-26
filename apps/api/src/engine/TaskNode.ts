@@ -249,13 +249,15 @@ Rules:
                     }
 
                     // Update child run record (skip in dry run)
-                    if (!isDryRun) {
+                    if (!isDryRun && !ctx.abortSignal?.aborted) {
                         await db.query(
                             `UPDATE execution_runs
                             SET status = $1, ended_at = NOW(), output_data = $2, error_message = $3
                             WHERE id = $4`,
                             [result.success ? 'completed' : 'failed', JSON.stringify(result), result.error ?? null, agentRunId]
                         );
+                    } else if (!isDryRun && ctx.abortSignal?.aborted) {
+                        await db.query(`UPDATE execution_runs SET output_data = $1 WHERE id = $2`, [JSON.stringify(result), agentRunId]);
                     }
 
                     toolOutput = result.success ? result.output?.text : { error: result.error };
@@ -282,10 +284,18 @@ Rules:
             summary: finalOutput.substring(0, 1000)
         };
 
-        if (!isDryRun) {
+        if (!isDryRun && !ctx.abortSignal?.aborted) {
             await db.query(
                 `UPDATE execution_runs
                 SET status = 'completed', ended_at = NOW(), output_data = $1
+                WHERE id = $2`,
+                [JSON.stringify(outputPayload), taskRunId]
+            );
+        } else if (!isDryRun && ctx.abortSignal?.aborted) {
+            // Just save the partial output data, but leave the status as 'failed' (set by kill route)
+            await db.query(
+                `UPDATE execution_runs
+                SET output_data = $1
                 WHERE id = $2`,
                 [JSON.stringify(outputPayload), taskRunId]
             );
