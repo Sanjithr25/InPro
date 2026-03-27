@@ -314,34 +314,48 @@ export default function AgentsPage() {
                   <div 
                     onClick={() => toggleGroup(group)}
                     style={{
-                      padding: '6px 14px 4px',
+                      margin: '8px 10px 6px',
+                      padding: '6px 10px',
                       fontSize: 10,
                       fontWeight: 700,
-                      letterSpacing: '0.08em',
+                      letterSpacing: '0.05em',
                       textTransform: 'uppercase',
-                      color: 'var(--text-muted)',
+                      color: 'var(--text-primary)',
+                      background: 'var(--bg-elevated)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 12,
                       userSelect: 'none',
                       cursor: 'pointer',
                       display: 'flex',
                       alignItems: 'center',
-                      gap: 6,
-                      transition: 'color 150ms ease',
+                      gap: 8,
+                      transition: 'all 150ms ease',
+                      boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
                     }}
-                    onMouseEnter={(e) => e.currentTarget.style.color = 'var(--text-secondary)'}
-                    onMouseLeave={(e) => e.currentTarget.style.color = 'var(--text-muted)'}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = 'var(--bg-surface)';
+                      e.currentTarget.style.borderColor = 'var(--accent)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'var(--bg-elevated)';
+                      e.currentTarget.style.borderColor = 'var(--border)';
+                    }}
                   >
                     {isCollapsed ? (
-                      <ChevronRight width={12} height={12} />
+                      <ChevronRight width={12} height={12} style={{ color: 'var(--text-muted)' }} />
                     ) : (
-                      <ChevronDown width={12} height={12} />
+                      <ChevronDown width={12} height={12} style={{ color: 'var(--text-muted)' }} />
                     )}
-                    <span>{group}</span>
+                    <span style={{ flex: 1 }}>{group}</span>
                     <span style={{ 
-                      marginLeft: 'auto', 
                       fontSize: 9,
-                      background: 'var(--bg-elevated)',
-                      padding: '2px 6px',
-                      borderRadius: 4,
+                      fontWeight: 600,
+                      background: 'var(--accent-dim)',
+                      color: 'var(--accent-hover)',
+                      padding: '2px 7px',
+                      borderRadius: 100,
+                      minWidth: 20,
+                      textAlign: 'center',
                     }}>
                       {groupAgents.length}
                     </span>

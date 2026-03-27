@@ -268,9 +268,40 @@ export default function TaskRunsPage() {
   const [expandedTasks, setExpandedTasks] = useState<Record<string, boolean>>({});
   const [runDetailsMap, setRunDetailsMap] = useState<Record<string, TaskRunRow>>({}); // taskId -> detailed run
 
-  // ─── 1. Initial Load: Only run once on mount ───────────────────────────────
+  // ─── 1. Initial Load: Fetch tasks and their last runs ──────────────────────
   useEffect(() => {
-    tasksApi.list().then(setTasks).catch(e => console.error('Failed to load tasks', e));
+    const loadInitial = async () => {
+      try {
+        const [tasksList, runsList] = await Promise.all([
+          tasksApi.list(),
+          taskRunsApi.list()
+        ]);
+        
+        setTasks(tasksList);
+        
+        // Build lastRuns and activeRuns from initial data
+        const newLastRuns: Record<string, TaskRunRow> = {};
+        const newActiveRuns: Record<string, string> = {};
+        
+        for (const r of runsList as (TaskRunRow & { is_active?: boolean })[]) {
+          if (!newLastRuns[r.task_id] || new Date(r.created_at) > new Date(newLastRuns[r.task_id].created_at)) {
+            newLastRuns[r.task_id] = r;
+          }
+          if (r.status === 'running') {
+            newActiveRuns[r.task_id] = r.id;
+          }
+        }
+        
+        setLastRuns(newLastRuns);
+        setActiveRuns(newActiveRuns);
+        setLoading(false);
+      } catch (e) {
+        console.error('Failed to load initial data', e);
+        setLoading(false);
+      }
+    };
+    
+    loadInitial();
   }, []);
 
   // ─── 2. Polling Logic: Consolidated ─────────────────────────────────────────
@@ -311,41 +342,45 @@ export default function TaskRunsPage() {
           return changed ? next : prev;
         });
 
-        // Fetch details for any expanded tasks (running or not)
-        const expandedIds = Object.entries(expandedTasks)
-          .filter(([_, isExp]) => isExp)
-          .map(([taskId, _]) => newActiveRuns[taskId] || newLastRuns[taskId]?.id)
-          .filter(Boolean) as string[];
-
-        if (expandedIds.length > 0) {
-          const detailedResults = await Promise.all(
-            expandedIds.map(id => taskRunsApi.get(id).catch(() => null))
-          );
-          
-          setRunDetailsMap(prev => {
-            const next = { ...prev };
-            detailedResults.forEach(det => {
-              if (det) next[det.task_id] = det;
-            });
-            return next;
-          });
-        }
+        // Schedule next poll: 3s if active, 8s if idle
+        const hasActive = Object.keys(newActiveRuns).length > 0;
+        timer = setTimeout(poll, hasActive ? 3000 : 8000);
       } catch (e) {
         console.warn('Polling hiccup', e);
-      } finally {
-        setLoading(false);
-        // Schedule next poll: 3s if active, 8s if idle
-        const hasActive = Object.keys(activeRuns).length > 0;
-        timer = setTimeout(poll, hasActive ? 3000 : 8000);
+        timer = setTimeout(poll, 8000); // Retry after 8s on error
       }
     };
 
-    poll();
+    // Start polling after a short delay to avoid double-fetch with initial load
+    timer = setTimeout(poll, 3000);
     return () => clearTimeout(timer);
-    // Dependencies: expandedTasks is needed to check what to fetch details for
-    // load() is replaced by the inline poll() function
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expandedTasks]);
+  }, []); // No dependencies - runs once and self-schedules
+
+  // ─── 3. Fetch details for expanded tasks ───────────────────────────────────
+  useEffect(() => {
+    const fetchDetails = async () => {
+      const expandedIds = Object.entries(expandedTasks)
+        .filter(([_, isExp]) => isExp)
+        .map(([taskId, _]) => activeRuns[taskId] || lastRuns[taskId]?.id)
+        .filter(Boolean) as string[];
+
+      if (expandedIds.length === 0) return;
+
+      const detailedResults = await Promise.all(
+        expandedIds.map(id => taskRunsApi.get(id).catch(() => null))
+      );
+      
+      setRunDetailsMap(prev => {
+        const next = { ...prev };
+        detailedResults.forEach(det => {
+          if (det) next[det.task_id] = det;
+        });
+        return next;
+      });
+    };
+
+    fetchDetails();
+  }, [expandedTasks, activeRuns, lastRuns]);
 
   const handleRun = async (task: TaskRow, prompt: string) => {
     try {
