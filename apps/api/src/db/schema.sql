@@ -116,6 +116,11 @@ CREATE TABLE IF NOT EXISTS execution_runs (
 CREATE INDEX IF NOT EXISTS idx_exec_runs_parent
   ON execution_runs(parent_run_id);
 
+-- Index for top-level runs (history page)
+CREATE INDEX IF NOT EXISTS idx_exec_runs_toplevel
+  ON execution_runs(node_type, parent_run_id, created_at DESC)
+  WHERE parent_run_id IS NULL AND node_type IN ('task', 'schedule');
+
 -- Status poll index (BullMQ workers query pending/running jobs)
 CREATE INDEX IF NOT EXISTS idx_exec_runs_pending
   ON execution_runs(status) WHERE status IN ('pending', 'running');

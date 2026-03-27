@@ -33,13 +33,16 @@ router.get('/', handle(async (_req, res) => {
         WHEN er.node_type = 'task'     THEN t.name
         WHEN er.node_type = 'schedule' THEN s.name
       END AS source_name,
-      (
-        SELECT COUNT(*) FROM execution_runs child
-        WHERE child.parent_run_id = er.id
-      ) AS child_count
+      COALESCE(child_counts.count, 0) AS child_count
     FROM execution_runs er
     LEFT JOIN tasks     t ON t.id = er.node_id AND er.node_type = 'task'
     LEFT JOIN schedules s ON s.id = er.node_id AND er.node_type = 'schedule'
+    LEFT JOIN (
+      SELECT parent_run_id, COUNT(*) as count
+      FROM execution_runs
+      WHERE parent_run_id IS NOT NULL
+      GROUP BY parent_run_id
+    ) child_counts ON child_counts.parent_run_id = er.id
     WHERE er.node_type IN ('task','schedule')
       AND er.parent_run_id IS NULL
     ORDER BY er.created_at DESC

@@ -423,3 +423,4 @@ npm run dev:web   # → http://localhost:3000
 - **Execution registry is local-only** — All active run tracking uses in-memory Map. Simple, fast, no external dependencies. Reconciliation on startup marks orphaned runs as failed.
 - **Collapsible agent groups** — Agent sidebar supports collapsing/expanding groups with agent count badges for better organization.
 - **Abort signal support** — All LLM providers (OpenAI-compatible and Anthropic) now support abort signals for instant kill operations. When a task/schedule is killed, the LLM API call is immediately aborted, reducing kill latency from 40+ seconds to ~1 second.
+- **Query optimization** — History route uses JOIN instead of subquery for child counts (eliminates N+1 problem). Adaptive polling on scheduler page (3s when running, 10s when idle). Added composite index for top-level runs query.

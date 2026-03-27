@@ -142,9 +142,21 @@ export default function SchedulerPage() {
 
   useEffect(() => {
     load();
-    const timer = setInterval(() => load(), 5000); // Poll every 5s
-    return () => clearInterval(timer);
-  }, [load]);
+    let timer: NodeJS.Timeout;
+    
+    const poll = () => {
+      load().then(() => {
+        // Adaptive polling: 3s if any schedule is running, 10s if all idle
+        const hasRunning = schedules.some(s => s.last_run_status === 'running');
+        timer = setTimeout(poll, hasRunning ? 3000 : 10000);
+      });
+    };
+    
+    // Start adaptive polling
+    timer = setTimeout(poll, 3000);
+    
+    return () => clearTimeout(timer);
+  }, [load, schedules]);
 
   const openCreate = () => { setSelected(null); setForm(EMPTY_FORM); setShowForm(true); };
   const openEdit   = (row: ScheduleRow) => { setSelected(row); setForm(fromRow(row)); setShowForm(true); };
