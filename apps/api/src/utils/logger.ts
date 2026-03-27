@@ -506,6 +506,21 @@ class StructuredLogger {
     });
   }
 
+  apiError(method: string, path: string, requestId: string, error: string) {
+    this.log({
+      level: 'ERROR',
+      component: 'api',
+      operation: 'error',
+      message: `${method} ${path} - ${error}`,
+      requestId,
+      method,
+      path,
+      spanId: requestId,
+      error,
+      success: false,
+    });
+  }
+
   // ─── Queue Metrics ────────────────────────────────────────────────────────
   queueMetrics(queueName: string, depth: number, processing: number) {
     this.log({

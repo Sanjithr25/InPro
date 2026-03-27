@@ -143,12 +143,15 @@ router.get('/', handle(async (_req, res) => {
       er.ended_at,
       er.created_at,
       EXTRACT(EPOCH FROM (COALESCE(er.ended_at, NOW()) - er.started_at))::int AS duration_seconds,
-      (
-        SELECT COUNT(*) FROM execution_runs child
-        WHERE child.parent_run_id = er.id AND child.node_type = 'agent'
-      ) AS agent_runs_count
+      COALESCE(agent_counts.count, 0) AS agent_runs_count
     FROM execution_runs er
     LEFT JOIN tasks t ON t.id = er.node_id
+    LEFT JOIN (
+      SELECT parent_run_id, COUNT(*) as count
+      FROM execution_runs
+      WHERE node_type = 'agent' AND parent_run_id IS NOT NULL
+      GROUP BY parent_run_id
+    ) agent_counts ON agent_counts.parent_run_id = er.id
     WHERE er.node_type = 'task'
     ORDER BY er.created_at DESC
     LIMIT 200

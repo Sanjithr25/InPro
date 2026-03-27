@@ -43,17 +43,16 @@ router.get('/', handle(async (_req, res) => {
     SELECT
       t.id, t.name, t.description, t.created_at, t.workflow_definition,
       jsonb_array_length(t.workflow_definition) AS step_count,
-      (
-        SELECT er.status FROM execution_runs er
-        WHERE er.node_type = 'task' AND er.node_id = t.id
-        ORDER BY er.created_at DESC LIMIT 1
-      ) AS last_run_status,
-      (
-        SELECT er.created_at FROM execution_runs er
-        WHERE er.node_type = 'task' AND er.node_id = t.id
-        ORDER BY er.created_at DESC LIMIT 1
-      ) AS last_run_at
+      last_runs.status AS last_run_status,
+      last_runs.created_at AS last_run_at
     FROM tasks t
+    LEFT JOIN LATERAL (
+      SELECT er.status, er.created_at
+      FROM execution_runs er
+      WHERE er.node_type = 'task' AND er.node_id = t.id
+      ORDER BY er.created_at DESC
+      LIMIT 1
+    ) last_runs ON true
     ORDER BY t.updated_at DESC
   `);
   res.json({ data: rows });
