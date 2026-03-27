@@ -507,3 +507,11 @@ body {
 .type-pill.select { border-color: rgba(59,130,246,0.4); color: var(--blue); background: rgba(59,130,246,0.08); }
 .type-pill.toggle { border-color: rgba(34,197,94,0.4); color: var(--green); background: rgba(34,197,94,0.08); }
 
+
+/* ─── Utility classes ────────────────────────────────────────────────────── */
+.hover-accent:hover {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+  background: var(--accent-dim) !important;
+  transition: all var(--dur) var(--ease);
+}

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Bot, Plus, Play, Save, Trash2, ChevronRight, Zap, Clock, Hash, Upload, X } from 'lucide-react';
+import { Bot, Plus, Play, Save, Trash2, ChevronRight, ChevronDown, Zap, Clock, Hash, Upload, X } from 'lucide-react';
 import { agentsApi, toolsApi, llmApi, type AgentRow, type ToolRow, type LlmSettingRow } from '@/lib/api';
 
 // ─── Initial state ────────────────────────────────────────────────────────────
@@ -13,11 +13,14 @@ export default function AgentsPage() {
   const [agents, setAgents]       = useState<AgentRow[]>([]);
   const [tools, setTools]         = useState<ToolRow[]>([]);
   const [providers, setProviders] = useState<LlmSettingRow[]>([]);
+  const [groups, setGroups]       = useState<string[]>([]);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [selected, setSelected]   = useState<AgentRow | null>(null);
   const [form, setForm]           = useState(blank());
   const [isNew, setIsNew]         = useState(false);
   const [search, setSearch]       = useState('');
   const [saving, setSaving]       = useState(false);
+  const [autoCategorizingGroup, setAutoCategorizingGroup] = useState(false);
   const fileInputRef              = useRef<HTMLInputElement>(null);
 
   // Dry run state
@@ -33,10 +36,16 @@ export default function AgentsPage() {
 
   // Load everything
   const load = useCallback(async () => {
-    const [a, t, p] = await Promise.all([agentsApi.list(), toolsApi.list(), llmApi.list()]);
+    const [a, t, p, g] = await Promise.all([
+      agentsApi.list(), 
+      toolsApi.list(), 
+      llmApi.list(),
+      agentsApi.getGroups()
+    ]);
     setAgents(a);
     setTools(t);
     setProviders(p);
+    setGroups(g);
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -102,6 +111,35 @@ export default function AgentsPage() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const autoChooseGroup = async () => {
+    if (!form.name?.trim()) {
+      alert('Please enter an agent name first');
+      return;
+    }
+    
+    setAutoCategorizingGroup(true);
+    try {
+      const { group } = await agentsApi.autoCategorize(form.name, form.skill ?? '');
+      setForm(f => ({ ...f, agent_group: group }));
+    } catch (err: any) {
+      alert(`Auto-categorization failed: ${err.message}`);
+    } finally {
+      setAutoCategorizingGroup(false);
+    }
+  };
+
+  const toggleGroup = (group: string) => {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(group)) {
+        next.delete(group);
+      } else {
+        next.add(group);
+      }
+      return next;
+    });
   };
 
   const del = async () => {
@@ -267,36 +305,63 @@ export default function AgentsPage() {
               <p>No agents yet. <br />Click + to create one.</p>
             </div>
           )}
-          {Object.entries(grouped).map(([group, groupAgents]) => (
-            <div key={group}>
-              {/* Group header — only shown when there are multiple groups or a named group */}
-              {(Object.keys(grouped).length > 1 || group !== 'Ungrouped') && (
-                <div style={{
-                  padding: '6px 14px 4px',
-                  fontSize: 10,
-                  fontWeight: 700,
-                  letterSpacing: '0.08em',
-                  textTransform: 'uppercase',
-                  color: 'var(--text-muted)',
-                  userSelect: 'none',
-                }}>
-                  {group}
-                </div>
-              )}
-              {groupAgents.map(agent => (
-                <div
-                  key={agent.id}
-                  className={`list-item${selected?.id === agent.id ? ' selected' : ''}`}
-                  onClick={() => select(agent)}
-                >
-                  <div className="list-item-name">{agent.name}</div>
-                  <div className="list-item-meta">
-                    {agent.llm_provider ?? defaultProvider?.provider ?? 'llama-local'} · {agent.provider_model ?? defaultProvider?.model_name ?? 'llama3.2'}
+          {Object.entries(grouped).map(([group, groupAgents]) => {
+            const isCollapsed = collapsedGroups.has(group);
+            return (
+              <div key={group}>
+                {/* Group header — only shown when there are multiple groups or a named group */}
+                {(Object.keys(grouped).length > 1 || group !== 'Ungrouped') && (
+                  <div 
+                    onClick={() => toggleGroup(group)}
+                    style={{
+                      padding: '6px 14px 4px',
+                      fontSize: 10,
+                      fontWeight: 700,
+                      letterSpacing: '0.08em',
+                      textTransform: 'uppercase',
+                      color: 'var(--text-muted)',
+                      userSelect: 'none',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      transition: 'color 150ms ease',
+                    }}
+                    onMouseEnter={(e) => e.currentTarget.style.color = 'var(--text-secondary)'}
+                    onMouseLeave={(e) => e.currentTarget.style.color = 'var(--text-muted)'}
+                  >
+                    {isCollapsed ? (
+                      <ChevronRight width={12} height={12} />
+                    ) : (
+                      <ChevronDown width={12} height={12} />
+                    )}
+                    <span>{group}</span>
+                    <span style={{ 
+                      marginLeft: 'auto', 
+                      fontSize: 9,
+                      background: 'var(--bg-elevated)',
+                      padding: '2px 6px',
+                      borderRadius: 4,
+                    }}>
+                      {groupAgents.length}
+                    </span>
                   </div>
-                </div>
-              ))}
-            </div>
-          ))}
+                )}
+                {!isCollapsed && groupAgents.map(agent => (
+                  <div
+                    key={agent.id}
+                    className={`list-item${selected?.id === agent.id ? ' selected' : ''}`}
+                    onClick={() => select(agent)}
+                  >
+                    <div className="list-item-name">{agent.name}</div>
+                    <div className="list-item-meta">
+                      {agent.llm_provider ?? defaultProvider?.provider ?? 'llama-local'} · {agent.provider_model ?? defaultProvider?.model_name ?? 'llama3.2'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
         </div>
       </aside>
 
@@ -349,14 +414,65 @@ export default function AgentsPage() {
               </div>
 
               <div className="form-group">
-                <label className="form-label">Group <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(optional — groups agents in the sidebar)</span></label>
-                <input
-                  id="agent-group"
-                  className="form-input"
-                  placeholder="e.g. Finance, Research, Support…"
-                  value={form.agent_group}
-                  onChange={e => setForm(f => ({ ...f, agent_group: e.target.value }))}
-                />
+                <label className="form-label">
+                  Group 
+                  <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>
+                    (optional — groups agents in the sidebar)
+                  </span>
+                </label>
+                
+                <div style={{ display: 'flex', gap: 8, alignItems: 'stretch' }}>
+                  <div style={{ flex: 1, display: 'flex', gap: 8 }}>
+                    <select
+                      id="agent-group-select"
+                      className="form-select"
+                      value={groups.includes(form.agent_group) ? form.agent_group : ''}
+                      onChange={e => setForm(f => ({ ...f, agent_group: e.target.value }))}
+                      style={{ flex: 1 }}
+                    >
+                      <option value="">Select existing or type new…</option>
+                      {groups.map(g => (
+                        <option key={g} value={g}>{g}</option>
+                      ))}
+                    </select>
+                    
+                    <input
+                      id="agent-group-custom"
+                      className="form-input"
+                      placeholder="Or type new group…"
+                      value={!groups.includes(form.agent_group) ? form.agent_group : ''}
+                      onChange={e => setForm(f => ({ ...f, agent_group: e.target.value }))}
+                      style={{ flex: 1 }}
+                    />
+                  </div>
+                  
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={autoChooseGroup}
+                    disabled={autoCategorizingGroup || !form.name?.trim()}
+                    title="Use AI to automatically categorize this agent"
+                    style={{ 
+                      minWidth: '120px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 6
+                    }}
+                  >
+                    {autoCategorizingGroup ? (
+                      <>
+                        <span className="spinner" style={{ width: 12, height: 12 }} />
+                        <span>Analyzing…</span>
+                      </>
+                    ) : (
+                      <>
+                        <Zap width={13} height={13} />
+                        <span>Auto Choose</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
 
               <div className="form-group" style={{ marginBottom: 0 }}>

@@ -33,6 +33,12 @@ export const agentsApi = {
       tokenUsage?: { inputTokens: number; outputTokens: number };
       toolsUsed?: string[]; latencyMs?: number; error?: string;
     }>(`/api/agents/${id}/run`, { method: 'POST', body: JSON.stringify({ prompt }) }),
+  getGroups: () => req<string[]>('/api/agents/groups/list'),
+  autoCategorize: (name: string, skill: string) =>
+    req<{ group: string }>('/api/agents/auto-categorize', { 
+      method: 'POST', 
+      body: JSON.stringify({ name, skill }) 
+    }),
 };
 
 // ─── Tools ────────────────────────────────────────────────────────────────────
@@ -229,6 +235,8 @@ export const schedulesApi = {
     req<{ is_enabled: boolean }>(`/api/schedules/${id}/toggle`, { method: 'POST' }),
   run: (id: string) =>
     req<{ triggered: boolean }>(`/api/schedules/${id}/run`, { method: 'POST' }),
+  kill: (id: string) =>
+    req<{ killed: boolean; schedule_id: string; schedule_run_id: string; message: string }>(`/api/schedules/${id}/kill`, { method: 'POST' }),
 };
 
 // ─── History ──────────────────────────────────────────────────────────────────

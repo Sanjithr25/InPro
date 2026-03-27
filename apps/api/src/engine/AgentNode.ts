@@ -15,18 +15,20 @@ import db from '../db/client.js';
 import { ToolRegistry } from './ToolRegistry.js';
 import { LLMProviderFactory, type ChatMessage } from './LLMProviderFactory.js';
 import { ExecutionContext, ExecutionResult, IExecutableNode, ToolDefinition } from '../types.js';
+import { logger } from '../utils/logger.js';
 
 const MAX_TURNS = 15;
 
 export class AgentNode implements IExecutableNode {
   async execute(ctx: ExecutionContext): Promise<ExecutionResult> {
     const { agentId, runId, prompt } = ctx.inputData;
+    let agent: any = null; // Define outside try block for catch access
 
     try {
       // ── 1. Fetch Agent ────────────────────────────────────────────────────
       const agentRes = await db.query(`SELECT * FROM agents WHERE id = $1`, [agentId]);
       if (agentRes.rows.length === 0) throw new Error(`Agent not found: ${agentId}`);
-      const agent = agentRes.rows[0];
+      agent = agentRes.rows[0];
 
       // ── 2. Fetch Tools ────────────────────────────────────────────────────
       const toolsRes = await db.query(
@@ -82,6 +84,8 @@ export class AgentNode implements IExecutableNode {
         await db.query(`UPDATE execution_runs SET status = 'running' WHERE id = $1`, [runId]);
       }
 
+      logger.agentStart(agent.name, agentId as string, runId as string, ctx.parentRunId || '', prompt as string);
+
       // ── 5. Agentic Loop ───────────────────────────────────────────────────
       const messages: ChatMessage[] = [
         { role: 'system', content: agent.skill ?? 'You are a helpful AI assistant.' },
@@ -99,7 +103,7 @@ export class AgentNode implements IExecutableNode {
 
         // Check for kill signal before each LLM call or tool execution
         if (ctx.abortSignal?.aborted) {
-          console.log(`[AgentNode] Agent "${agent.name}" was killed at turn ${turn}.`);
+          logger.agentKilled(agent.name, agentId as string, runId as string);
           outputText += '\n\n[Agent was killed by user]';
           break;
         }
@@ -180,6 +184,8 @@ export class AgentNode implements IExecutableNode {
         },
       };
 
+      const executionDuration = Date.now() - (ctx.inputData.startTime || Date.now());
+
       if (runId && !ctx.abortSignal?.aborted) {
         await db.query(
           `UPDATE execution_runs
@@ -187,6 +193,7 @@ export class AgentNode implements IExecutableNode {
            WHERE id = $2`,
           [JSON.stringify(finalResult), runId]
         );
+        logger.agentEnd(agent.name, agentId as string, runId as string, true, executionDuration, usedTools);
       } else if (runId && ctx.abortSignal?.aborted) {
         await db.query(
           `UPDATE execution_runs
@@ -194,12 +201,18 @@ export class AgentNode implements IExecutableNode {
            WHERE id = $2`,
            [JSON.stringify(finalResult), runId]
         );
+        logger.agentEnd(agent.name, agentId as string, runId as string, false, executionDuration);
       }
 
       return finalResult;
 
     } catch (err: any) {
-      console.error('[AgentNode] Error:', err);
+      logger.error('Agent execution failed', 'agent', err, {
+        agentName: agent?.name || 'Unknown',
+        agentId: agentId as string,
+        agentRunId: runId as string,
+      });
+      
       if (runId) {
         await db.query(
           `UPDATE execution_runs

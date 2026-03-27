@@ -15,6 +15,7 @@ import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import pool from '../db/client.js';
 import { schedulerService, computeNextRun } from '../engine/SchedulerService.js';
+import { logger } from '../utils/logger.js';
 
 const router = Router();
 const handle = (fn: (req: Request, res: Response) => Promise<void>) =>
@@ -176,7 +177,16 @@ router.post('/:id/toggle', handle(async (req, res) => {
     await schedulerService.reschedule(id);
   } else {
     schedulerService.unschedule(id);
-    await pool.query(`UPDATE schedules SET next_run_at = NULL WHERE id = $1`, [id]);
+    // Clear next_run_at and reset last_run_status if it was running
+    await pool.query(`
+      UPDATE schedules 
+      SET next_run_at = NULL, 
+          last_run_status = CASE 
+            WHEN last_run_status = 'running' THEN 'failed' 
+            ELSE last_run_status 
+          END
+      WHERE id = $1
+    `, [id]);
   }
   res.json({ data: { is_enabled: enabled } });
 }));
@@ -200,6 +210,78 @@ router.post('/:id/run', handle(async (req, res) => {
 
   schedulerService.executeSchedule(id, taskIds)
     .catch(e => console.error('[Scheduler] Manual run error:', e));
+}));
+
+// ─── POST /api/schedules/:id/kill ────────────────────────────────────────────
+router.post('/:id/kill', handle(async (req, res) => {
+  const id = pid(req);
+  
+  // Get schedule name
+  const { rows: schedRows } = await pool.query(`SELECT name FROM schedules WHERE id = $1`, [id]);
+  const scheduleName = schedRows[0]?.name || 'Unknown Schedule';
+  
+  // Find the currently running schedule execution
+  const { rows } = await pool.query(
+    `SELECT id FROM execution_runs 
+     WHERE node_type = 'schedule' AND node_id = $1 AND status = 'running' 
+     ORDER BY started_at DESC LIMIT 1`,
+    [id]
+  );
+  
+  if (rows.length === 0) {
+    res.status(404).json({ error: 'No active run found for this schedule' });
+    return;
+  }
+  
+  const scheduleRunId = rows[0].id;
+  
+  // Import the kill function from task-runs
+  const { getActiveController } = await import('./task-runs.js');
+  
+  // Kill the schedule run tree (this will cascade to all tasks and agents)
+  const controller = getActiveController(scheduleRunId);
+  
+  if (controller) {
+    controller.abort();
+    logger.scheduleKilled(scheduleName, id, scheduleRunId, 'user');
+  }
+  
+  // Update all descendants in the tree
+  const { rowCount } = await pool.query(`
+    WITH RECURSIVE run_tree AS (
+      SELECT id FROM execution_runs WHERE id = $1
+      UNION ALL
+      SELECT er.id FROM execution_runs er
+      INNER JOIN run_tree rt ON er.parent_run_id = rt.id
+    )
+    UPDATE execution_runs
+    SET status = 'failed', 
+        ended_at = COALESCE(ended_at, NOW()), 
+        error_message = 'Schedule killed by user'
+    WHERE id IN (SELECT id FROM run_tree) AND status = 'running'
+  `, [scheduleRunId]);
+  
+  // Update schedule status
+  await pool.query(
+    `UPDATE schedules SET last_run_status = 'failed' WHERE id = $1`,
+    [id]
+  );
+  
+  logger.info(`Killed schedule and updated ${rowCount || 0} execution records`, 'scheduler', {
+    scheduleName,
+    scheduleId: id,
+    scheduleRunId,
+  });
+  
+  res.json({ 
+    data: { 
+      killed: true, 
+      schedule_id: id,
+      schedule_run_id: scheduleRunId,
+      db_records_updated: rowCount || 0,
+      message: 'Schedule execution and all child tasks killed'
+    } 
+  });
 }));
 
 export default router;

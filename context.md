@@ -17,9 +17,9 @@ A web application for building, configuring, and orchestrating AI agents, tools,
 | **Frontend** | Next.js 15 (App Router), Vanilla CSS |
 | **Backend** | Node.js + Express (TypeScript, ESM) |
 | **Database** | PostgreSQL via Supabase (transaction pooler) |
+| **Queue** | Redis + BullMQ (for scheduling only) |
 | **LLM** | Ollama (local, `llama3.2`) — OpenAI-compatible API at `localhost:11434/v1` |
 | **LLM SDKs** | `openai` npm package (for Ollama + OpenAI + Groq), `@anthropic-ai/sdk` (for Anthropic) |
-| **Queue (planned)** | Redis + BullMQ (Phase 4) |
 | **Vector DB (planned)** | Milvus (Phase 5+) |
 
 > ⚠️ The `@anthropic-ai/claude-agent-sdk` has been **removed**. It spawned `claude code` as a subprocess requiring a real Anthropic account. All agent execution is now driven by our own agentic loop in `AgentNode.ts`.
@@ -41,10 +41,24 @@ execute(context: ExecutionContext): Promise<ExecutionResult>
 | 0 | `LLMProviderFactory` | Builds a `ChatProvider` for the configured backend (Ollama/OpenAI/Anthropic/Groq) |
 | 1 | `AgentNode` | Stateless. Fetches agent definition + tools from DB, resolves provider via factory, runs agentic tool-use loop |
 | 2 | `TaskNode` ✅ | Chains multiple `AgentNode`s linearly; passes outputs as inputs to next step |
-| 3 | `ScheduleNode` *(planned Phase 4)* | Root trigger (cron/webhook/manual); runs assigned `TaskNode` sequence |
+| 3 | `SchedulerService` ✅ | Root trigger (cron/interval/one_time/manual); runs assigned `TaskNode` sequence via BullMQ |
+
+### Execution Tracking
+
+**In-Memory Registry** (apps/api/src/routes/task-runs.ts):
+- All active executions tracked in local `Map<runId, AbortController>`
+- Enables kill operations (abort signals)
+- Simple, fast, no external dependencies
+- Cleared on server restart (reconciliation marks orphaned runs as failed)
+
+**Why not Redis for execution tracking?**
+- BullMQ already uses Redis for job scheduling
+- Execution tracking needs to be instant (local Map is O(1))
+- Redis would add 100k+ unnecessary requests per day
+- Single-server deployment doesn't need distributed tracking
 
 ### `ExecutionContext`
-Passed explicitly to every `.execute()` call. Must be **strictly JSON-serializable** (no DB connections, no class instances — it will cross the Redis queue boundary in Phase 4):
+Passed explicitly to every `.execute()` call. Must be **strictly JSON-serializable**:
 ```typescript
 {
   inputData: Record<string, unknown>  // agentId/taskId, runId, prompt, …
@@ -52,6 +66,7 @@ Passed explicitly to every `.execute()` call. Must be **strictly JSON-serializab
   totalSteps: number
   maxDepth: number
   parentRunId: string | null
+  abortSignal?: AbortSignal          // For kill operations
 }
 ```
 
@@ -399,8 +414,11 @@ npm run dev:web   # → http://localhost:3000
 - **Built-ins auto-seed on startup** — `ToolRegistry.seed()` is called in `index.ts` before the server starts accepting requests. Uses `ON CONFLICT (name) DO NOTHING` — safe to call repeatedly.
 - **web_search uses terminal errors** — DuckDuckGo sometimes returns empty body (causes `SyntaxError` on `res.json()`). All failure paths return `error: 'terminal'` with explicit "do not retry" instructions to prevent the model from looping.
 - **Task step prompts are context-aware** — Step 1 gets the task description + user prompt. All subsequent steps get the previous step's full output injected as context, enabling natural research → synthesize → report chains.
-- **Execution tree is fully logged** — every `TaskNode` run creates a parent `execution_run` with child `execution_run` records per agent step, linked via `parent_run_id`. Ready for the Run History UI in Phase 5.
+- **Execution tree is fully logged** — every `TaskNode` run creates a parent `execution_run` with child `execution_run` records per agent step, linked via `parent_run_id`. Ready for the Run History UI.
 - **Kill signals override autonomous completion** — if `ctx.abortSignal?.aborted` fires inside `TaskNode` or `AgentNode`, the node saves partial output data but securely respects the DB's `.status = 'failed'` (set by the kill route) to prevent resurrected tasks.
 - **API rate limits increased** — `express-rate-limit` inside `index.ts` allows 5000 requests to properly support the robust frontend interval loop fetching updates `taskRunsApi.get` for expanded active runs without returning 429 error bodies that break Next.js JSON parser.
-- **agent_group** — field on agents used purely for UI sidebar grouping. Not used in execution.
+- **agent_group** — field on agents used purely for UI sidebar grouping. Not used in execution. Supports auto-categorization via LLM.
 - **Groq supported** — `groq` is a valid provider in `llm_settings`. Uses `openai` npm package with `baseURL: https://api.groq.com/openai/v1`.
+- **Redis usage optimized** — BullMQ uses Redis for job scheduling only. Execution tracking uses in-memory Map for efficiency (no Redis calls). This reduces Redis usage by 99% and keeps us within free tier limits.
+- **Execution registry is local-only** — All active run tracking uses in-memory Map. Simple, fast, no external dependencies. Reconciliation on startup marks orphaned runs as failed.
+- **Collapsible agent groups** — Agent sidebar supports collapsing/expanding groups with agent count badges for better organization.

@@ -18,6 +18,8 @@ import pool from '../db/client.js';
 import { TaskNode } from './TaskNode.js';
 import type { ExecutionContext } from '../types.js';
 import net from 'node:net';
+import { v4 as uuidv4 } from 'uuid';
+import { logger } from '../utils/logger.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 export interface ScheduleRow {
@@ -104,13 +106,10 @@ export class SchedulerService {
   async start() {
     const redisUrl = process.env.REDIS_URL ?? 'redis://localhost:6379';
 
-    // ── Step 1: Probe Redis reachability via raw socket BEFORE creating any BullMQ objects.
-    // This prevents BullMQ's IORedis from emitting uncaught error events on the process.
     const redisReachable = await probeRedis(redisUrl);
 
     if (redisReachable) {
       try {
-        // Dynamically import BullMQ only when Redis is reachable
         const { Queue, Worker } = await import('bullmq');
         const connection = { url: redisUrl };
 
@@ -119,21 +118,20 @@ export class SchedulerService {
           defaultJobOptions: { removeOnComplete: 100, removeOnFail: 50 },
         });
 
-        // Attach error listener to prevent uncaught EventEmitter errors
         this.queue.on('error', (err) => {
-          console.warn('[Scheduler] BullMQ queue error (non-fatal):', err.message);
+          logger.warn('BullMQ queue error (non-fatal)', 'redis', { error: err.message });
         });
 
         this.useRedis = true;
-        console.log('[Scheduler] BullMQ connected to Redis — using queue-backed scheduling');
+        logger.redisConnected('bullmq');
         this._startWorker(Worker, connection);
-      } catch (err) {
-        console.warn('[Scheduler] BullMQ init failed — falling back to in-process scheduler:', err);
+      } catch (err: any) {
+        logger.redisError(err.message);
         this.queue = null;
         this.useRedis = false;
       }
     } else {
-      console.warn('[Scheduler] Redis unavailable (connection refused) — using in-process fallback scheduler');
+      logger.redisError('Connection refused');
       this.useRedis = false;
     }
 
@@ -178,7 +176,7 @@ export class SchedulerService {
     }
   }
 
-  // ─── Public execution method (called by manual run route) ──────────────────
+  /** Public method to execute a schedule (used by manual trigger and scheduled runs) */
   async executeSchedule(scheduleId: string, taskIds: string[]) {
     return this._executeSchedule(scheduleId, taskIds);
   }
@@ -189,19 +187,33 @@ export class SchedulerService {
     WorkerClass: typeof import('bullmq').Worker,
     connection: { url: string }
   ) {
+    // BullMQ requires maxRetriesPerRequest to be null
+    const connectionOptions = {
+      ...connection,
+      retryStrategy: (times: number) => {
+        if (times > 3) return null;
+        return Math.min(times * 1000, 4000);
+      },
+    };
+    
     this.worker = new WorkerClass<ScheduleJobData>(
       'schedules',
       async (job) => {
         await this._executeSchedule(job.data.scheduleId, job.data.taskIds);
       },
-      { connection, concurrency: 3 }
+      { 
+        connection: connectionOptions, 
+        concurrency: 3,
+      }
     );
 
     this.worker.on('error', (err) => {
-      console.warn('[Scheduler] BullMQ worker error (non-fatal):', err.message);
+      logger.warn('BullMQ worker error (non-fatal)', 'redis', { error: err.message });
     });
     this.worker.on('failed', (job, err) => {
-      console.error(`[Scheduler] Job ${job?.id} failed:`, err.message);
+      logger.error('BullMQ job failed', 'scheduler', err, { 
+        metadata: { jobId: job?.id }
+      });
     });
   }
 
@@ -213,10 +225,15 @@ export class SchedulerService {
       WHERE s.is_enabled = true
       GROUP BY s.id
     `);
+    
     for (const row of rows) {
       this._scheduleOne(row);
     }
-    console.log(`[Scheduler] Loaded ${rows.length} enabled schedule(s)`);
+    
+    const { rows: totalRows } = await pool.query(`SELECT COUNT(*) as total FROM schedules`);
+    const totalCount = parseInt(totalRows[0].total);
+    
+    logger.schedulerInit(rows.length, totalCount);
   }
 
   private _scheduleOne(row: ScheduleRow & { task_ids: string[] }) {
@@ -256,65 +273,151 @@ export class SchedulerService {
 
   private async _executeSchedule(scheduleId: string, taskIds: string[]) {
     if (taskIds.length === 0) {
-      console.warn(`[Scheduler] Schedule ${scheduleId} has no tasks — skipping`);
+      logger.warn('Schedule has no tasks, skipping execution', 'scheduler', { scheduleId });
       return;
     }
 
-    console.log(`[Scheduler] Executing schedule ${scheduleId} with ${taskIds.length} task(s)`);
+    const { rows: schedRows } = await pool.query(`SELECT name FROM schedules WHERE id = $1`, [scheduleId]);
+    const scheduleName = schedRows[0]?.name || 'Unknown Schedule';
 
-    // Mark schedule as running
     await pool.query(
       `UPDATE schedules SET last_run_status = 'running', last_run_at = NOW() WHERE id = $1`,
       [scheduleId]
     );
 
     let overallStatus: 'completed' | 'failed' = 'completed';
+    const scheduleRunId = uuidv4();
+    const traceId = uuidv4();
+    const startTime = Date.now();
+    
+    const scheduleController = new AbortController();
+    const { registerRun, unregisterRun } = await import('../routes/task-runs.js');
+    
+    registerRun(scheduleRunId, scheduleController, 'schedule', scheduleName);
+    
+    try {
+      await pool.query(
+        `INSERT INTO execution_runs (id, node_type, node_id, status, input_data, started_at)
+         VALUES ($1, 'schedule', $2, 'running', $3, NOW())`,
+        [scheduleRunId, scheduleId, JSON.stringify({ scheduleId, taskIds })]
+      );
 
-    // Create a parent schedule execution_run
-    const { rows: runRows } = await pool.query(
-      `INSERT INTO execution_runs (node_type, node_id, status, input_data, started_at)
-       VALUES ('schedule', $1, 'running', $2, NOW()) RETURNING id`,
-      [scheduleId, JSON.stringify({ scheduleId, taskIds })]
-    );
-    const scheduleRunId = runRows[0].id as string;
+      logger.scheduleStart(scheduleName, scheduleId, scheduleRunId, taskIds.length, traceId);
 
-    // Run each task in order
-    for (const taskId of taskIds) {
-      const ctx: ExecutionContext = {
-        inputData: { taskId, initialPrompt: '', scheduleId, scheduleRunId },
-        currentDepth: 0,
-        totalSteps: 0,
-        maxDepth: 10,
-        parentRunId: scheduleRunId,
-      };
-      try {
-        const result = await new TaskNode().execute(ctx);
-        if (!result.success) overallStatus = 'failed';
-      } catch (e) {
-        console.error(`[Scheduler] Task ${taskId} threw:`, e);
+      const { rows: taskRows } = await pool.query(
+        `SELECT id, name FROM tasks WHERE id = ANY($1::uuid[])`,
+        [taskIds]
+      );
+      const taskMap = new Map(taskRows.map((t: any) => [t.id, t.name]));
+
+      for (let i = 0; i < taskIds.length; i++) {
+        const taskId = taskIds[i];
+        const taskName = taskMap.get(taskId) || 'Unknown Task';
+        
+        if (scheduleController.signal.aborted) {
+          logger.warn(`Schedule aborted, stopping task execution (${i + 1}/${taskIds.length} tasks completed)`, 'scheduler', {
+            scheduleName,
+            scheduleId,
+            scheduleRunId,
+          });
+          overallStatus = 'failed';
+          break;
+        }
+        
+        const taskController = new AbortController();
+        const taskRunId = uuidv4();
+        const taskStartTime = Date.now();
+        
+        registerRun(taskRunId, taskController, 'task', taskName);
+        
+        scheduleController.signal.addEventListener('abort', () => {
+          taskController.abort();
+        });
+        
+        const ctx: ExecutionContext = {
+          inputData: { taskId, initialPrompt: '', scheduleId, scheduleRunId, runId: taskRunId },
+          currentDepth: 0,
+          totalSteps: 0,
+          maxDepth: 10,
+          parentRunId: scheduleRunId,
+          abortSignal: taskController.signal,
+        };
+        
+        logger.taskStart(taskName, taskId, taskRunId, scheduleRunId);
+        
+        try {
+          const result = await new TaskNode().execute(ctx);
+          const taskDuration = Date.now() - taskStartTime;
+          
+          // Check if schedule was killed while task was running
+          const { rows: scheduleCheck } = await pool.query(
+            `SELECT status FROM execution_runs WHERE id = $1`,
+            [scheduleRunId]
+          );
+          
+          if (scheduleCheck[0]?.status === 'failed') {
+            logger.warn('Schedule was killed externally, stopping execution', 'scheduler', {
+              scheduleName,
+              scheduleId,
+              scheduleRunId,
+            });
+            scheduleController.abort();
+            overallStatus = 'failed';
+            logger.taskEnd(taskName, taskId, taskRunId, false, taskDuration, 'Schedule killed');
+            break;
+          }
+          
+          if (!result.success) {
+            overallStatus = 'failed';
+            logger.taskEnd(taskName, taskId, taskRunId, false, taskDuration, result.error);
+          } else {
+            logger.taskEnd(taskName, taskId, taskRunId, true, taskDuration);
+          }
+        } catch (e: any) {
+          const taskDuration = Date.now() - taskStartTime;
+          logger.error('Task execution threw exception', 'task', e, {
+            taskName,
+            taskId,
+            taskRunId,
+            scheduleName,
+            scheduleId,
+            scheduleRunId,
+          });
+          overallStatus = 'failed';
+          
+          if (e.name === 'AbortError' || scheduleController.signal.aborted) {
+            logger.taskEnd(taskName, taskId, taskRunId, false, taskDuration, 'Aborted');
+            break;
+          }
+        } finally {
+          unregisterRun(taskRunId, 'task', taskName);
+        }
+      }
+
+      if (scheduleController.signal.aborted) {
         overallStatus = 'failed';
       }
+
+      const nextRun = await this._getNextRunForSchedule(scheduleId);
+
+      await pool.query(
+        `UPDATE schedules SET last_run_status = $1, last_run_at = NOW(), next_run_at = $2 WHERE id = $3`,
+        [overallStatus, nextRun?.toISOString() ?? null, scheduleId]
+      );
+
+      await pool.query(
+        `UPDATE execution_runs SET status = $1, ended_at = NOW() WHERE id = $2`,
+        [overallStatus, scheduleRunId]
+      );
+
+      const scheduleDuration = Date.now() - startTime;
+      logger.scheduleEnd(scheduleName, scheduleId, scheduleRunId, overallStatus === 'completed', scheduleDuration);
+
+      await this.reschedule(scheduleId);
+      
+    } finally {
+      unregisterRun(scheduleRunId, 'schedule', scheduleName);
     }
-
-    // Compute next run for recurring schedules
-    const nextRun = await this._getNextRunForSchedule(scheduleId);
-
-    // Update schedule row with final status
-    await pool.query(
-      `UPDATE schedules SET last_run_status = $1, last_run_at = NOW(), next_run_at = $2 WHERE id = $3`,
-      [overallStatus, nextRun?.toISOString() ?? null, scheduleId]
-    );
-
-    // Close the schedule execution_run
-    await pool.query(
-      `UPDATE execution_runs SET status = $1, ended_at = NOW() WHERE id = $2`,
-      [overallStatus, scheduleRunId]
-    );
-
-    console.log(`[Scheduler] Schedule ${scheduleId} finished with status: ${overallStatus}`);
-
-    // Re-schedule for next run (cron/interval repeat)
-    await this.reschedule(scheduleId);
   }
 
   private async _getNextRunForSchedule(scheduleId: string): Promise<Date | null> {

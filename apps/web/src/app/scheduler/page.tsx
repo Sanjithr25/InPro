@@ -123,16 +123,22 @@ export default function SchedulerPage() {
       const [s, t] = await Promise.all([schedulesApi.list(), tasksApi.list()]);
       setSchedules(s);
       setTasks(t);
+      // Update selected schedule with fresh data, but preserve selection
       if (selected) {
         const updated = s.find(x => x.id === selected.id);
-        if (updated) setSelected(updated);
+        if (updated) {
+          setSelected(updated);
+        } else {
+          // Schedule was deleted, clear selection
+          setSelected(null);
+        }
       }
     } catch (e) {
       console.warn('Failed to refresh schedules', e);
     } finally {
       setLoading(false);
     }
-  }, [selected]);
+  }, [selected?.id]); // Only depend on selected.id, not the entire selected object
 
   useEffect(() => {
     load();
@@ -168,9 +174,18 @@ export default function SchedulerPage() {
   };
 
   const handleToggle = async (id: string) => {
-    const { is_enabled } = await schedulesApi.toggle(id);
-    setSchedules(s => s.map(x => x.id === id ? { ...x, is_enabled } : x));
-    if (selected?.id === id) setSelected(s => s ? { ...s, is_enabled } : null);
+    try {
+      const { is_enabled } = await schedulesApi.toggle(id);
+      setSchedules(s => s.map(x => x.id === id ? { ...x, is_enabled } : x));
+      if (selected?.id === id) {
+        setSelected(s => s ? { ...s, is_enabled } : null);
+      }
+      // Refresh data after a short delay to get updated status
+      setTimeout(load, 500);
+    } catch (e: any) {
+      console.error('Toggle failed:', e);
+      alert(`Toggle failed: ${e.message}`);
+    }
   };
 
   const handleRun = async (id: string) => {
@@ -183,6 +198,17 @@ export default function SchedulerPage() {
       alert(`Manual run failed: ${e.message}`);
     } finally {
       setRunningId(null);
+    }
+  };
+
+  const handleKill = async (id: string) => {
+    if (!confirm('Kill this running schedule and all its tasks?')) return;
+    try {
+      await schedulesApi.kill(id);
+      // Refresh immediately to show updated status
+      await load();
+    } catch (e: any) {
+      alert(`Kill failed: ${e.message}`);
     }
   };
 
@@ -414,10 +440,18 @@ export default function SchedulerPage() {
                   <div style={{ height: 20, width: 1, background: 'var(--border)', margin: '0 4px' }} />
 
                   <button className="btn btn-ghost" onClick={() => openEdit(selected)}><Pencil width={14} height={14} /> Edit</button>
-                  <button className="btn btn-primary" onClick={() => handleRun(selected.id)} disabled={runningId === selected.id || selected.last_run_status === 'running'}>
-                     {runningId === selected.id ? <span className="spinner" /> : <Play width={14} height={14} />}
-                     Run Now
-                  </button>
+                  
+                  {selected.last_run_status === 'running' ? (
+                    <button className="btn btn-warning" onClick={() => handleKill(selected.id)}>
+                      <XCircle width={14} height={14} /> Kill
+                    </button>
+                  ) : (
+                    <button className="btn btn-primary" onClick={() => handleRun(selected.id)} disabled={runningId === selected.id}>
+                      {runningId === selected.id ? <span className="spinner" /> : <Play width={14} height={14} />}
+                      Run Now
+                    </button>
+                  )}
+                  
                   <button className="btn btn-danger" onClick={() => handleDelete(selected.id)}><Trash2 width={14} height={14} /></button>
                 </div>
              </div>

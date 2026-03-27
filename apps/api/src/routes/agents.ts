@@ -25,6 +25,18 @@ router.get('/', handle(async (_req, res) => {
   res.json({ data: rows });
 }));
 
+// ─── GET /api/agents/groups ───────────────────────────────────────────────────
+router.get('/groups/list', handle(async (_req, res) => {
+  const { rows } = await pool.query(
+    `SELECT DISTINCT agent_group 
+     FROM agents 
+     WHERE agent_group IS NOT NULL AND agent_group != '' 
+     ORDER BY agent_group ASC`
+  );
+  const groups = rows.map(r => r.agent_group);
+  res.json({ data: groups });
+}));
+
 // ─── GET /api/agents/:id ──────────────────────────────────────────────────────
 router.get('/:id', handle(async (req, res) => {
   const { rows } = await pool.query(
@@ -44,6 +56,89 @@ router.get('/:id', handle(async (req, res) => {
   );
   if (rows.length === 0) { res.status(404).json({ error: 'Agent not found' }); return; }
   res.json({ data: rows[0] });
+}));
+
+// ─── POST /api/agents/auto-categorize ────────────────────────────────────────
+const AutoCategorizeSchema = z.object({
+  name: z.string().min(1),
+  skill: z.string().default(''),
+});
+
+router.post('/auto-categorize', handle(async (req, res) => {
+  const parsed = AutoCategorizeSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.flatten() }); return; }
+
+  const { name, skill } = parsed.data;
+
+  // Get existing groups
+  const { rows: groupRows } = await pool.query(
+    `SELECT DISTINCT agent_group 
+     FROM agents 
+     WHERE agent_group IS NOT NULL AND agent_group != '' 
+     ORDER BY agent_group ASC`
+  );
+  const existingGroups = groupRows.map(r => r.agent_group);
+
+  // Get default LLM provider
+  const { rows: llmRows } = await pool.query(
+    `SELECT * FROM llm_settings WHERE is_default = true LIMIT 1`
+  );
+  
+  if (llmRows.length === 0) {
+    res.status(400).json({ error: 'No default LLM provider configured' });
+    return;
+  }
+
+  const llmSettings = llmRows[0];
+  const llm = LLMProviderFactory.create({
+    provider: llmSettings.provider,
+    apiKey: llmSettings.api_key,
+    model: llmSettings.model_name,
+    baseUrl: llmSettings.base_url ?? undefined,
+  });
+
+  // Build categorization prompt
+  const prompt = `You are an AI agent categorization system. Your task is to assign an agent to the most appropriate group based on its name and skill description.
+
+Agent Name: ${name}
+Agent Skill/Description: ${skill || 'No description provided'}
+
+${existingGroups.length > 0 ? `Existing Groups: ${existingGroups.join(', ')}` : 'No existing groups yet.'}
+
+Instructions:
+1. If the agent fits well into an existing group, return that group name EXACTLY as shown above
+2. If the agent doesn't fit any existing group, create a NEW group name that is:
+   - Short (1-2 words)
+   - Descriptive of the agent's primary function
+   - Professional and clear
+   - Examples: "Research", "Finance", "Support", "Content", "Analytics", "Development"
+
+Return ONLY the group name, nothing else. No explanation, no punctuation, just the group name.`;
+
+  try {
+    let suggestedGroup = '';
+    
+    // Stream the response to get the group name
+    for await (const chunk of llm.chatStream([
+      { role: 'user', content: prompt }
+    ], [])) {
+      if (chunk.type === 'text') {
+        suggestedGroup += chunk.delta;
+      }
+    }
+
+    // Clean up the response
+    suggestedGroup = suggestedGroup.trim().replace(/['"]/g, '');
+    
+    // Validate it's not empty
+    if (!suggestedGroup) {
+      suggestedGroup = 'General';
+    }
+
+    res.json({ data: { group: suggestedGroup } });
+  } catch (err: any) {
+    res.status(500).json({ error: `Auto-categorization failed: ${err.message}` });
+  }
 }));
 
 // ─── POST /api/agents ─────────────────────────────────────────────────────────

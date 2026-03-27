@@ -121,7 +121,11 @@ CRITICAL:
         try {
             while (turn < MAX_TURNS) {
                 turn++;
-                if (ctx.abortSignal?.aborted) break;
+                
+                // Check for abort before each turn
+                if (ctx.abortSignal?.aborted) {
+                    throw new Error('Task execution aborted');
+                }
 
                 const response = await llm.chat(messages, agentTools, { maxTokens: 4096 });
                 if (response.inputTokens) {
@@ -141,7 +145,10 @@ CRITICAL:
 
                 // Execute delegations
                 for (const tc of response.toolCalls) {
-                    if (ctx.abortSignal?.aborted) break;
+                    // Check for abort before each tool call
+                    if (ctx.abortSignal?.aborted) {
+                        throw new Error('Task execution aborted');
+                    }
                     
                     const toolDef = agentTools.find(t => t.name === tc.name) as (ToolDefinition & { _agentId?: string }) | undefined;
                     if (!toolDef || !toolDef._agentId) {
@@ -205,10 +212,18 @@ CRITICAL:
 
         } catch (err: any) {
             console.error('[TaskNode] Error:', err);
+            
+            const isAborted = ctx.abortSignal?.aborted || err.message?.includes('aborted');
+            const errorMessage = isAborted ? 'Killed by user' : err.message;
+            
             if (!isDryRun) {
-                await db.query(`UPDATE execution_runs SET status = 'failed', ended_at = NOW(), error_message = $1 WHERE id = $2`, [err.message, taskRunId]);
+                await db.query(
+                    `UPDATE execution_runs SET status = 'failed', ended_at = NOW(), error_message = $1 WHERE id = $2`, 
+                    [errorMessage, taskRunId]
+                );
             }
-            return { success: false, output: { text: '' }, error: err.message };
+            
+            return { success: false, output: { text: finalOutput || '' }, error: errorMessage };
         }
     }
 }
