@@ -1,20 +1,11 @@
 /**
- * TaskNode — Autonomous Task Delegator
+ * TaskNode — Agentic Task Manager
  * ─────────────────────────────────────────────────────────────────────────────
- * A TaskNode acts as a "Manager Agent". It is assigned a top-level goal (task description)
- * and a team of specialized agents (`agent_ids`).
+ * Executes a task by acting as a high-level "Manager" AI that coordinates
+ * other agents.
  *
- * Instead of executing steps linearly, the Task LLM decides how to solve the goal by
- * delegating sub-tasks to its assigned agents.
- *
- * The Task LLM is given dynamic tools — one for each assigned agent (e.g., `delegate_to_researcher`).
- * When it calls a delegate tool, the TaskNode:
- *   1. Spawns an AgentNode for that specific agent
- *   2. Passes the Task LLM's instructions to the agent
- *   3. Waits for the agent to finish
- *   4. Feeds the agent's output back to the Task LLM
- *
- * The loop continues until the Task LLM determines the goal is fully achieved.
+ * Current implementation uses a manager-agent loop that can delegate
+ * to individual agent nodes based on the workflow definition.
  */
 
 import db from '../db/client.js';
@@ -23,205 +14,149 @@ import { LLMProviderFactory, type ChatMessage } from './LLMProviderFactory.js';
 import { ExecutionContext, ExecutionResult, IExecutableNode, ToolDefinition } from '../types.js';
 import { v4 as uuidv4 } from 'uuid';
 
+const MAX_TURNS = 20;
+
 export class TaskNode implements IExecutableNode {
-  async execute(ctx: ExecutionContext): Promise<ExecutionResult> {
-    const { taskId, initialPrompt } = ctx.inputData as {
-      taskId: string;
-      initialPrompt?: string;
-    };
+    async execute(ctx: ExecutionContext): Promise<ExecutionResult> {
+        const { taskId, initialPrompt } = ctx.inputData as {
+            taskId: string;
+            initialPrompt?: string;
+        };
 
-    if (ctx.currentDepth >= ctx.maxDepth) {
-        return { success: false, output: { text: '' }, error: 'Max task depth exceeded' };
-    }
+        if (ctx.currentDepth >= ctx.maxDepth) {
+            return { success: false, output: { text: '' }, error: 'Max task depth exceeded' };
+        }
 
-    // ── 1. Load task definition ───────────────────────────────────────────────
-    const taskRes = await db.query(`SELECT * FROM tasks WHERE id = $1`, [taskId]);
-    if (taskRes.rows.length === 0) {
-      return { success: false, output: { text: '' }, error: `Task not found: ${taskId}` };
-    }
-    const task = taskRes.rows[0];
+        // ── 1. Load Task + Steps ─────────────────────────────────────────────
+        const taskRes = await db.query(`SELECT * FROM tasks WHERE id = $1`, [taskId]);
+        if (taskRes.rows.length === 0) {
+            return { success: false, output: { text: '' }, error: `Task not found: ${taskId}` };
+        }
+        const task = taskRes.rows[0];
 
-    // Load agents from workflow definition
-    const rawWorkflow = task.workflow_definition;
-    const workflow: any[] = Array.isArray(rawWorkflow) ? rawWorkflow : JSON.parse(rawWorkflow ?? '[]');
-    const agentIds = [...new Set(workflow.map(s => s.agentId))];
-    
-    let agents: any[] = [];
-    if (agentIds.length > 0) {
-      const agentsRes = await db.query(
-        `SELECT id, name, skill FROM agents WHERE id = ANY($1::uuid[])`,
-        [agentIds]
-      );
-      agents = agentsRes.rows;
-    }
+        const workflowRes = await db.query(`SELECT * FROM schedule_tasks WHERE schedule_id = $1 ORDER BY order_index`, [taskId]);
+        // Note: For standalone tasks, it might just use the workflow_definition blob.
+        const rawWorkflow = task.workflow_definition;
+        const workflowPlan = Array.isArray(rawWorkflow) ? rawWorkflow : JSON.parse(rawWorkflow ?? '[]');
 
-    // ── 2. Create/Update parent task run ─────────────────────────────────────
-    const isDryRun = ctx.inputData.dry_run === true;
-    const taskRunId = (ctx.inputData.runId as string | undefined) ?? uuidv4();
-    if (!isDryRun) {
-        // We use ON CONFLICT DO UPDATE because the route often creates the record first
-        // to respond immediately with a matching ID for the frontend to poll.
-        // We'll update it with more detailed info (like agent count) here.
-        await db.query(
-        `INSERT INTO execution_runs
-            (id, node_type, node_id, parent_run_id, status, input_data, started_at)
-        VALUES ($1, 'task', $2, $3, 'running', $4, NOW())
-        ON CONFLICT (id) DO UPDATE SET 
-            input_data = $4,
-            status = EXCLUDED.status,
-            started_at = COALESCE(execution_runs.started_at, EXCLUDED.started_at)`,
-        [taskRunId, taskId, ctx.parentRunId ?? null, JSON.stringify({ taskId, initialPrompt, agents: agents.length })]
-        );
-    }
+        // ── 2. Create/Sync Task Run ──────────────────────────────────────────
+        const isDryRun = ctx.inputData.dry_run === true;
+        const taskRunId = (ctx.inputData.runId as string | undefined) ?? uuidv4();
 
-    // ── 3. Resolve LLM provider ───────────────────────────────────────────────
-    let providerOverride: Parameters<typeof LLMProviderFactory.create>[0] = {};
-    const settingsRes = await db.query(
-      task.llm_provider_id
-        ? `SELECT * FROM llm_settings WHERE id = $1`
-        : `SELECT * FROM llm_settings WHERE is_default = true LIMIT 1`,
-      [task.llm_provider_id ?? undefined].filter(Boolean)
-    );
+        if (!isDryRun) {
+            await db.query(
+                `INSERT INTO execution_runs (id, node_type, node_id, parent_run_id, status, input_data, started_at)
+                 VALUES ($1, 'task', $2, $3, 'running', $4, NOW())
+                 ON CONFLICT (id) DO UPDATE SET 
+                    status = 'running',
+                    started_at = COALESCE(execution_runs.started_at, EXCLUDED.started_at),
+                    input_data = $4`,
+                [taskRunId, taskId, ctx.parentRunId ?? null, JSON.stringify({ taskId, initialPrompt })]
+            );
+        }
 
-    if (settingsRes.rows.length > 0) {
-      const s = settingsRes.rows[0];
-      providerOverride = { provider: s.provider, apiKey: s.api_key, model: s.model_name, baseUrl: s.base_url ?? undefined };
-    } else {
-        await db.query(`UPDATE execution_runs SET status = 'failed', error_message = 'No LLM Provider' WHERE id = $1`, [taskRunId]);
-        return { success: false, output: { text: '' }, error: 'No LLM provider configured' };
-    }
+        // ── 3. Resolve Manager LLM ───────────────────────────────────────────
+        let providerOverride: Parameters<typeof LLMProviderFactory.create>[0] = {};
 
-    const llm = LLMProviderFactory.create(providerOverride);
+        if (task.llm_provider_id) {
+            const settingsRes = await db.query(`SELECT * FROM llm_settings WHERE id = $1`, [task.llm_provider_id]);
+            if (settingsRes.rows.length > 0) {
+                const s = settingsRes.rows[0];
+                providerOverride = { provider: s.provider, apiKey: s.api_key, model: s.model_name, baseUrl: s.base_url ?? undefined };
+            }
+        } else {
+            const defaultRes = await db.query(`SELECT * FROM llm_settings WHERE is_default = true LIMIT 1`);
+            if (defaultRes.rows.length > 0) {
+                const s = defaultRes.rows[0];
+                providerOverride = { provider: s.provider, apiKey: s.api_key, model: s.model_name, baseUrl: s.base_url ?? undefined };
+            }
+        }
 
-    // ── 4. Build Agent Delegation Tools ───────────────────────────────────────
-    const dynamicTools: ToolDefinition[] = agents.map(agent => {
-        // Safe tool name: lowercase, replace non-alphanumeric with underscore
-        const safeName = agent.name.toLowerCase().replace(/[^a-z0-9]/g, '_');
-        return {
-            name: `delegate_to_${safeName}`,
-            description: `Delegate a sub-task to the agent "${agent.name}". Agent skill/role: ${agent.skill.substring(0, 500)}. Use this to assign work to this agent and wait for their response. Provide clear, comprehensive instructions.`,
+        const llm = LLMProviderFactory.create(providerOverride);
+
+        // ── 4. Virtual "Agents" as Tools ─────────────────────────────────────
+        // The manager can "call" an agent as if it were a tool.
+        const agentsRes = await db.query(`SELECT id, name, skill FROM agents`);
+        const allAgents = agentsRes.rows;
+
+        const agentTools: ToolDefinition[] & { _agentId?: string }[] = allAgents.map(a => ({
+            name: `delegate_to_${a.name.toLowerCase().replace(/\s+/g, '_')}`,
+            description: `Delegate a sub-task to the ${a.name} agent. Skill: ${a.skill}. Use this for ${a.name} related tasks.`,
             inputSchema: {
                 type: 'object',
-                properties: {
-                    instructions: {
-                        type: 'string',
-                        description: 'Detailed instructions, context, and the exact goal the agent needs to achieve.',
-                    }
-                },
+                properties: { instructions: { type: 'string', description: 'Specific instructions for this agent.' } },
                 required: ['instructions']
             },
-            // Store mapping on the tool definition object (not standard but convenient)
-            _agentId: agent.id,
-            _agentName: agent.name
-        } as unknown as ToolDefinition;
-    });
+            _agentId: a.id
+        }));
 
-    const toolMap = new Map(dynamicTools.map((t: any) => [t.name, t]));
+        // ── 5. Manager Loop ──────────────────────────────────────────────────
+        const workflowJson = JSON.stringify(workflowPlan, null, 2);
+        const systemPrompt = `You are a high-level Task Manager AI. 
+The user has a task: "${task.name}".
+Description: ${task.description}
 
-    // ── 5. Agentic Loop for Task Manager ──────────────────────────────────────
-    const workflowStr = workflow.map((s, i) => 
-      `Step ${i + 1}: [${agents.find(a => a.id === s.agentId)?.name || s.agentId}] ${s.stepName}\n  Instructions: ${s.description}`
-    ).join('\n');
+You have a proposed workflow plan:
+${workflowJson}
 
-    const systemPrompt = `You are a high-level Task Manager AI.
-Your Task:
-Name: ${task.name}
-Description/Goal: ${task.description}
+You have access to several specialized agents. Your goal is to achieve the task by delegating to these agents in a logical sequence.
+When you delegate, the agent will perform its own autonomous loop and return the result to you.
+Synthesis the information you receive and decide if the task is complete or if further steps are needed.
 
-Here is the explicit workflow plan requested by the user:
-<workflow_plan>
-${workflowStr || "No specific workflow plan provided. Create your own."}
-</workflow_plan>
+CRITICAL: 
+1. Use the "delegate_to_..." tools to start sub-tasks.
+2. When you have achieved the goal, provide a final "REPORT" to the user and end your turn.
+3. If an agent fails, you can try another agent or ask for clarification.`;
 
-You have a team of highly capable specialized agents available as tools.
-Your job is to coordinate them, delegate work to them, and synthesize their outputs to achieve the overall goal.
+        const messages: ChatMessage[] = [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: initialPrompt || "Execute the task based on the workflow plan." },
+        ];
 
-Rules:
-1. You should generally follow the <workflow_plan> provided above, but you are autonomous. You may deviate from it, repeat steps, or ask agents to correct their work if necessary.
-2. Call the delegation tools to assign work to the appropriate agents. Provide clear instructions for what you need them to do.
-3. Wait for the agent's response, evaluate it, and take the next step.
-4. If an agent fails or provides incomplete work, explicitly tell them what to fix in a new delegation.
-5. Once you determine the overall goal is fully achieved, provide a final comprehensive summary/report of the outcome to the user, and end your turn.
-6. Do NOT try to do the hard work yourself if an agent is better suited for it. You are the manager.`;
+        let finalOutput = '';
+        const allToolsUsed: string[] = [];
+        const totalTokens = { inputTokens: 0, outputTokens: 0 };
+        let turn = 0;
 
-    const messages: ChatMessage[] = [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: initialPrompt ? `User Request: ${initialPrompt}` : "Begin executing the task." }
-    ];
+        try {
+            while (turn < MAX_TURNS) {
+                turn++;
+                if (ctx.abortSignal?.aborted) break;
 
-    const MAX_TURNS = 15;
-    const allToolsUsed: string[] = [];
-    const executionHistory: Set<string> = new Set();
-    const totalTokens = { inputTokens: 0, outputTokens: 0 };
-    let finalOutput = '';
+                const response = await llm.chat(messages, agentTools, { maxTokens: 4096 });
+                if (response.inputTokens) {
+                    totalTokens.inputTokens += response.inputTokens;
+                    totalTokens.outputTokens += response.outputTokens;
+                }
 
-    console.log(`[TaskNode] Starting autonomous task "${task.name}" with ${agents.length} agents squad`);
+                if (response.content) {
+                    finalOutput += (finalOutput ? '\n\n' : '') + response.content;
+                }
 
-    try {
-        for (let turn = 0; turn < MAX_TURNS; turn++) {
-            // Check for kill signal before each LLM call
-            if (ctx.abortSignal?.aborted) {
-                console.log(`[TaskNode] Task "${task.name}" was killed at turn ${turn}.`);
-                finalOutput += '\n\n[Task was killed by user]';
-                break;
-            }
+                if (response.stopReason === 'end_turn' || response.toolCalls.length === 0) {
+                    break;
+                }
 
-            const response = await llm.chat(messages, dynamicTools, { maxTokens: 4096 });
-            
-            if (response.inputTokens) {
-                totalTokens.inputTokens += response.inputTokens;
-                totalTokens.outputTokens += response.outputTokens;
-            }
+                messages.push({ role: 'assistant', content: response.content } as ChatMessage);
 
-            messages.push({
-                role: 'assistant',
-                content: response.content || '',
-                // Omitting toolCalls from the history for now
-                // to avoid strict validation errors in OpenAI/Groq payloads
-            } as ChatMessage);
-
-            if (response.content) {
-                finalOutput += (finalOutput ? '\n\n' : '') + response.content;
-            }
-
-            if (response.stopReason !== 'tool_use' || !response.toolCalls || response.toolCalls.length === 0) {
-                console.log(`[TaskNode] Task "${task.name}" finished autonomously.`);
-                break;
-            }
-
-            // Execute delegated agents
-            const toolResultsMsgs: ChatMessage[] = [];
-            
-            for (const tc of response.toolCalls) {
-                if (ctx.abortSignal?.aborted) break; // React immediately to kills
-                allToolsUsed.push(tc.name);
-                console.log(`[TaskNode] Delegating: ${tc.name}`);
-                
-                const toolDef = toolMap.get(tc.name) as any;
-                let toolOutput: any;
-
-                const callFingerprint = `${tc.name}:${JSON.stringify(tc.arguments)}`;
-                
-                if (!toolDef || !toolDef._agentId) {
-                    toolOutput = { error: `Agent tool ${tc.name} not found or invalid.` };
-                } else if (executionHistory.has(callFingerprint)) {
-                    // 🚨 Loop detected
-                    console.log(`[TaskNode] ⚠️ Caught loop for ${tc.name}`);
-                    toolOutput = { 
-                        error: `[SYSTEM ALERT] You already called ${tc.name} with these exact arguments and received a response. Repeating the same action causes an infinite loop. You MUST adjust your instructions, select a different agent, or finalize the task.` 
-                    };
-                } else {
-                    executionHistory.add(callFingerprint);
-                    // Create child agent run
-                    const instructions = tc.arguments.instructions as string;
+                // Execute delegations
+                for (const tc of response.toolCalls) {
+                    if (ctx.abortSignal?.aborted) break;
                     
+                    const toolDef = agentTools.find(t => t.name === tc.name) as (ToolDefinition & { _agentId?: string }) | undefined;
+                    if (!toolDef || !toolDef._agentId) {
+                        messages.push({ role: 'user', content: `Error: Tool "${tc.name}" not found.` });
+                        continue;
+                    }
+
+                    const instructions = (tc.arguments as any).instructions || '';
+                    console.log(`[TaskNode] Delegating to agent ${toolDef._agentId}: ${instructions.slice(0, 50)}...`);
+
                     const agentRunId = uuidv4();
-                    // Only persist to DB when NOT a dry run
                     if (!isDryRun) {
                         await db.query(
-                            `INSERT INTO execution_runs
-                                (id, node_type, node_id, parent_run_id, status, input_data, started_at)
-                            VALUES ($1, 'agent', $2, $3, 'running', $4, NOW())`,
+                            `INSERT INTO execution_runs (id, node_type, node_id, parent_run_id, status, input_data, started_at)
+                             VALUES ($1, 'agent', $2, $3, 'running', $4, NOW())`,
                             [agentRunId, toolDef._agentId, taskRunId, JSON.stringify({ prompt: instructions })]
                         );
                     }
@@ -241,82 +176,39 @@ Rules:
                     };
 
                     const agentNode = new AgentNode();
-                    const result = await agentNode.execute(agentCtx);
-
-                    if (result.tokenUsage) {
-                        totalTokens.inputTokens += result.tokenUsage.inputTokens;
-                        totalTokens.outputTokens += result.tokenUsage.outputTokens;
+                    const subResult = await agentNode.execute(agentCtx);
+                    
+                    if (subResult.tokenUsage) {
+                        totalTokens.inputTokens += subResult.tokenUsage.inputTokens;
+                        totalTokens.outputTokens += subResult.tokenUsage.outputTokens;
                     }
+                    if (subResult.toolsUsed) allToolsUsed.push(...subResult.toolsUsed);
 
-                    // Update child run record (skip in dry run)
-                    if (!isDryRun && !ctx.abortSignal?.aborted) {
-                        await db.query(
-                            `UPDATE execution_runs
-                            SET status = $1, ended_at = NOW(), output_data = $2, error_message = $3
-                            WHERE id = $4`,
-                            [result.success ? 'completed' : 'failed', JSON.stringify(result), result.error ?? null, agentRunId]
-                        );
-                    } else if (!isDryRun && ctx.abortSignal?.aborted) {
-                        await db.query(`UPDATE execution_runs SET output_data = $1 WHERE id = $2`, [JSON.stringify(result), agentRunId]);
-                    }
-
-                    toolOutput = result.success ? result.output?.text : { error: result.error };
+                    messages.push({
+                        role: 'user',
+                        content: `Agent "${tc.name}" result:\n${subResult.output?.text || (subResult.success ? 'Success (no output)' : 'Failed: ' + subResult.error)}`
+                    });
                 }
-
-                toolResultsMsgs.push({
-                    role: 'user',
-                    content: `Result from ${tc.name}:\n\n${typeof toolOutput === 'string' ? toolOutput : JSON.stringify(toolOutput, null, 2)}`
-                });
             }
 
-            messages.push(...toolResultsMsgs);
-            
-            // Brief 1s delay to prevent hammering external APIs too aggressively
-            if (turn < MAX_TURNS - 1) {
-                await new Promise(resolve => setTimeout(resolve, 1000));
+            const outputPayload = {
+                text: finalOutput,
+                steps: allToolsUsed.length,
+                summary: finalOutput.substring(0, 1000)
+            };
+
+            if (!isDryRun && !ctx.abortSignal?.aborted) {
+                await db.query(`UPDATE execution_runs SET status = 'completed', ended_at = NOW(), output_data = $1 WHERE id = $2`, [JSON.stringify(outputPayload), taskRunId]);
             }
+
+            return { success: true, output: outputPayload, tokenUsage: totalTokens, toolsUsed: [...new Set(allToolsUsed)] };
+
+        } catch (err: any) {
+            console.error('[TaskNode] Error:', err);
+            if (!isDryRun) {
+                await db.query(`UPDATE execution_runs SET status = 'failed', ended_at = NOW(), error_message = $1 WHERE id = $2`, [err.message, taskRunId]);
+            }
+            return { success: false, output: { text: '' }, error: err.message };
         }
-
-        // ── 6. Update task run record ─────────────────────────────────────────────
-        const outputPayload = {
-            text: finalOutput,
-            steps: allToolsUsed.length,
-            summary: finalOutput.substring(0, 1000)
-        };
-
-        if (!isDryRun && !ctx.abortSignal?.aborted) {
-            await db.query(
-                `UPDATE execution_runs
-                SET status = 'completed', ended_at = NOW(), output_data = $1
-                WHERE id = $2`,
-                [JSON.stringify(outputPayload), taskRunId]
-            );
-        } else if (!isDryRun && ctx.abortSignal?.aborted) {
-            // Just save the partial output data, but leave the status as 'failed' (set by kill route)
-            await db.query(
-                `UPDATE execution_runs
-                SET output_data = $1
-                WHERE id = $2`,
-                [JSON.stringify(outputPayload), taskRunId]
-            );
-        }
-
-        return {
-            success: true,
-            output: outputPayload,
-            tokenUsage: totalTokens,
-            toolsUsed: [...new Set(allToolsUsed)]
-        };
-
-    } catch (err: any) {
-        console.error('[TaskNode Error]', err);
-        if (!isDryRun) {
-            await db.query(
-                `UPDATE execution_runs SET status = 'failed', ended_at = NOW(), error_message = $1 WHERE id = $2`,
-                [err.message, taskRunId]
-            );
-        }
-        return { success: false, output: { text: '' }, error: err.message };
     }
-  }
 }

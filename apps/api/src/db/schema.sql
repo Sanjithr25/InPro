@@ -72,12 +72,16 @@ CREATE TABLE IF NOT EXISTS tasks (
 
 -- ─── Schedules ───────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS schedules (
-  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name           TEXT NOT NULL UNIQUE,
-  trigger_type   TEXT NOT NULL CHECK (trigger_type IN ('cron','interval','one_time','webhook','manual')),
-  trigger_config JSONB NOT NULL DEFAULT '{}',
-  is_enabled     BOOLEAN NOT NULL DEFAULT true,
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name             TEXT NOT NULL UNIQUE,
+  trigger_type     TEXT NOT NULL CHECK (trigger_type IN ('cron','interval','one_time','webhook','manual')),
+  trigger_config   JSONB NOT NULL DEFAULT '{}',
+  is_enabled       BOOLEAN NOT NULL DEFAULT true,
+  last_run_at      TIMESTAMPTZ,
+  last_run_status  TEXT CHECK (last_run_status IN ('completed','failed','running')),
+  next_run_at      TIMESTAMPTZ,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- ─── Schedule ↔ Task Join ─────────────────────────────────────────────────────

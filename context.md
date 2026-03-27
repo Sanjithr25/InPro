@@ -2,7 +2,7 @@
 
 **Purpose:** This file is the central source of truth for the AI Workflow Platform project. All engineers and AI agents working on this codebase must adhere to the architecture, database schema, and abstractions defined here.
 
-**Last updated:** 2026-03-26
+**Last updated:** 2026-03-27
 
 ---
 
@@ -269,8 +269,8 @@ All routes are under the Express API at `http://localhost:3001`.
 | Tools | `/tools` | ✅ Full CRUD — unified list, built-ins pre-seeded |
 | Tasks | `/tasks` | ✅ Full CRUD + AI Workflow Generator + Run |
 | Task Runs | `/task-runs` | ✅ Live execution tracker, polling with expanding timeline |
-| Scheduler | `/scheduler` | 🔲 Stub — Phase 4 |
-| Run History | `/history` | 🔲 Stub — Phase 5 |
+| Scheduler | `/scheduler` | ✅ Full CRUD + toggle + run now |
+| Run History | `/history` | ✅ Unified task + schedule history (Table + Drawer) |
 | LLM Settings | `/settings` | ✅ Full CRUD |
 
 ### Agents Page (`/agents`)
@@ -384,9 +384,9 @@ npm run dev:web   # → http://localhost:3000
 | 1 | Walking skeleton: monorepo, DB, AgentNode, API, basic UI | ✅ Complete |
 | 2 | Tool Layer: DB-driven ToolRegistry, built-ins auto-seeded, tools page | ✅ Complete |
 | 3 | **Orchestration**: `TaskNode` linear chaining, multi-agent runs, AI workflow generation | ✅ Complete |
-| 4 | Async dispatch: Redis + BullMQ, non-blocking execution, frontend polling | 🔲 Next |
-| 5 | Observability: Run History UI, polymorphic `execution_runs` tree browser | 🔲 |
-| 6 | Scheduler: cron/interval/one-time/webhook triggers, `schedule_tasks` ordering | 🔲 |
+| 4 | **Async dispatch**: Redis + BullMQ, non-blocking execution, Scheduler UI, unified Run History | ✅ Complete |
+| 5 | **Observability**: deeper run tree browser, export, metrics | 🔲 |
+| 6 | Vector DB: Milvus integration, semantic memory for agents | 🔲 |
 
 ---
 

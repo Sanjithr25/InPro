@@ -194,3 +194,66 @@ export const fsApi = {
   browse: (path: string) => req<FsBrowseResult>(`/api/fs/browse?path=${encodeURIComponent(path)}`),
 };
 
+
+// ─── Schedules ────────────────────────────────────────────────────────────────
+export type TriggerConfig = {
+  cron?: string;
+  intervalMinutes?: number;
+  runAt?: string;
+};
+
+export type ScheduleRow = {
+  id: string;
+  name: string;
+  trigger_type: 'cron' | 'interval' | 'one_time' | 'manual';
+  trigger_config: TriggerConfig;
+  is_enabled: boolean;
+  last_run_at: string | null;
+  last_run_status: 'completed' | 'failed' | 'running' | null;
+  next_run_at: string | null;
+  created_at: string;
+  updated_at: string | null;
+  tasks: { id: string; name: string }[];
+};
+
+export const schedulesApi = {
+  list: () => req<ScheduleRow[]>('/api/schedules'),
+  get:  (id: string) => req<ScheduleRow>(`/api/schedules/${id}`),
+  create: (body: { name: string; trigger_type: string; trigger_config: TriggerConfig; is_enabled?: boolean; task_ids?: string[] }) =>
+    req<{ id: string }>('/api/schedules', { method: 'POST', body: JSON.stringify(body) }),
+  update: (id: string, body: Partial<{ name: string; trigger_type: string; trigger_config: TriggerConfig; is_enabled: boolean; task_ids: string[] }>) =>
+    req<{ updated: boolean }>(`/api/schedules/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  delete: (id: string) =>
+    req<{ deleted: boolean }>(`/api/schedules/${id}`, { method: 'DELETE' }),
+  toggle: (id: string) =>
+    req<{ is_enabled: boolean }>(`/api/schedules/${id}/toggle`, { method: 'POST' }),
+  run: (id: string) =>
+    req<{ triggered: boolean }>(`/api/schedules/${id}/run`, { method: 'POST' }),
+};
+
+// ─── History ──────────────────────────────────────────────────────────────────
+export type HistoryRunRow = {
+  id: string;
+  node_type: 'task' | 'schedule';
+  node_id: string;
+  source_name: string | null;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  input_data: Record<string, unknown>;
+  output_data: Record<string, unknown> | null;
+  error_message: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  duration_seconds: number | null;
+  created_at: string;
+  child_count: number;
+};
+
+export type HistoryRunDetail = HistoryRunRow & {
+  children: (HistoryRunRow & { task_name?: string; agent_name?: string; agent_group?: string; agent_skill?: string; agent_count?: number })[];
+};
+
+export const historyApi = {
+  list: () => req<HistoryRunRow[]>('/api/history'),
+  get:  (id: string) => req<HistoryRunDetail>(`/api/history/${id}`),
+  delete: (id: string) => req<{ deleted: boolean }>(`/api/history/${id}`, { method: 'DELETE' }),
+};

@@ -9,9 +9,12 @@ import agentsRouter      from './routes/agents.js';
 import toolsRouter       from './routes/tools.js';
 import tasksRouter       from './routes/tasks.js';
 import taskRunsRouter    from './routes/task-runs.js';
+import schedulesRouter   from './routes/schedules.js';
+import historyRouter     from './routes/history.js';
 import llmSettingsRouter from './routes/llm-settings.js';
 import fsRouter          from './routes/fs.js';
 import { ToolRegistry }  from './engine/ToolRegistry.js';
+import { schedulerService } from './engine/SchedulerService.js';
 
 const app = express();
 
@@ -39,6 +42,8 @@ app.use('/api/agents',       agentsRouter);
 app.use('/api/tools',        toolsRouter);
 app.use('/api/tasks',        tasksRouter);
 app.use('/api/task-runs',    taskRunsRouter);
+app.use('/api/schedules',    schedulesRouter);
+app.use('/api/history',      historyRouter);
 app.use('/api/llm-settings', llmSettingsRouter);
 app.use('/api/fs',           fsRouter);
 // removed proxy usage
@@ -58,6 +63,7 @@ import { reconcileRuns } from './routes/task-runs.js';
 Promise.all([
   ToolRegistry.seed(),
   reconcileRuns(),
+  schedulerService.start(),
 ])
   .then(() => {
     app.listen(config.port, () => {
