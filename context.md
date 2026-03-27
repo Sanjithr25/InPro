@@ -422,3 +422,4 @@ npm run dev:web   # → http://localhost:3000
 - **Redis usage optimized** — BullMQ uses Redis for job scheduling only. Execution tracking uses in-memory Map for efficiency (no Redis calls). This reduces Redis usage by 99% and keeps us within free tier limits.
 - **Execution registry is local-only** — All active run tracking uses in-memory Map. Simple, fast, no external dependencies. Reconciliation on startup marks orphaned runs as failed.
 - **Collapsible agent groups** — Agent sidebar supports collapsing/expanding groups with agent count badges for better organization.
+- **Abort signal support** — All LLM providers (OpenAI-compatible and Anthropic) now support abort signals for instant kill operations. When a task/schedule is killed, the LLM API call is immediately aborted, reducing kill latency from 40+ seconds to ~1 second.

@@ -110,7 +110,10 @@ export class AgentNode implements IExecutableNode {
 
         console.log(`[AgentNode] Turn ${turn} — calling LLM (${providerOverride.provider ?? 'default'})`);
 
-        const response = await llm.chat(messages, toolDefs, { maxTokens: 4096 });
+        const response = await llm.chat(messages, toolDefs, { 
+          maxTokens: 4096,
+          signal: ctx.abortSignal 
+        });
 
         if (response.inputTokens) {
           tokenUsage.inputTokens += response.inputTokens;

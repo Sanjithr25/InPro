@@ -51,12 +51,12 @@ export interface ChatProvider {
   chat(
     messages: ChatMessage[],
     tools?: ToolDefinition[],
-    options?: { maxTokens?: number; temperature?: number }
+    options?: { maxTokens?: number; temperature?: number; signal?: AbortSignal }
   ): Promise<ChatResponse>;
   chatStream(
     messages: ChatMessage[],
     tools?: ToolDefinition[],
-    options?: { maxTokens?: number; temperature?: number }
+    options?: { maxTokens?: number; temperature?: number; signal?: AbortSignal }
   ): AsyncIterable<StreamChunk>;
 }
 
@@ -118,7 +118,9 @@ function makeOpenAICompatibleProvider(client: OpenAI, model: string): ChatProvid
         ...(openaiTools.length > 0 && { tools: openaiTools }),
       };
 
-      const response = await client.chat.completions.create(params);
+      const response = await client.chat.completions.create(params, {
+        signal: options.signal,
+      });
       const choice = response.choices[0];
       const msg = choice.message;
 
@@ -157,6 +159,8 @@ function makeOpenAICompatibleProvider(client: OpenAI, model: string): ChatProvid
         temperature: options.temperature ?? 0.7,
         stream: true,
         ...(openaiTools.length > 0 && { tools: openaiTools }),
+      }, {
+        signal: options.signal,
       });
       let inputTokens = 0;
       let outputTokens = 0;
@@ -213,6 +217,8 @@ function makeAnthropicProvider(apiKey: string, model: string, baseURL?: string):
         system: systemMsg?.content,
         messages: chatMessages,
         ...(anthropicTools.length > 0 && { tools: anthropicTools }),
+      }, {
+        signal: options.signal,
       });
 
       const textBlocks = response.content
@@ -256,6 +262,8 @@ function makeAnthropicProvider(apiKey: string, model: string, baseURL?: string):
         system: systemMsg?.content,
         messages: chatMessages,
         ...(anthropicTools.length > 0 && { tools: anthropicTools }),
+      }, {
+        signal: options.signal,
       });
       for await (const event of stream) {
         if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
