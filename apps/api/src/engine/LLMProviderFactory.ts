@@ -325,13 +325,15 @@ export class LLMProviderFactory {
 
     // Create provider based on type
     switch (provider) {
-      case 'anthropic': {
-        console.log(`[LLMFactory] Initializing Anthropic SDK wrapper for model: ${model}${baseUrl ? ` (at ${baseUrl})` : ''}`);
-        return makeAnthropicProvider(apiKey!, model, baseUrl);
+      case 'anthropic':
+      case 'ollama':
+      case 'llama-local': {
+        const finalApiKey = apiKey || 'not-required';
+        const finalBaseUrl = baseUrl || requirements.defaultBaseUrl;
+        console.log(`[LLMFactory] Initializing Anthropic SDK wrapper for provider: ${provider}, model: ${model}${finalBaseUrl ? ` (at ${finalBaseUrl})` : ''}`);
+        return makeAnthropicProvider(finalApiKey, model, finalBaseUrl);
       }
 
-      case 'llama-local':
-      case 'ollama':
       case 'groq':
       case 'gemini':
       case 'openai':

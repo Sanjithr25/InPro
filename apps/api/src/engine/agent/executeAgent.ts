@@ -350,7 +350,7 @@ async function executeAgentLoop(
       providerInfo: {
         name: config.provider.provider,
         model: config.provider.model,
-        wrapper: config.provider.provider === 'anthropic' ? 'anthropic' : 'openai',
+        wrapper: ['anthropic', 'ollama', 'llama-local'].includes(config.provider.provider) ? 'anthropic' : 'openai',
         baseUrl: config.provider.baseUrl ?? undefined,
       },
       executionDuration: 0, // Will be set by caller
