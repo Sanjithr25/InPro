@@ -2,7 +2,7 @@
 
 **Purpose:** This file is the central source of truth for the AI Workflow Platform project. All engineers and AI agents working on this codebase must adhere to the architecture, database schema, and abstractions defined here.
 
-**Last updated:** 2026-03-27
+**Last updated:** 2026-03-31
 
 ---
 
