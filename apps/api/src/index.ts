@@ -14,6 +14,7 @@ import schedulesRouter   from './routes/schedules.js';
 import historyRouter     from './routes/history.js';
 import llmSettingsRouter from './routes/llm-settings.js';
 import fsRouter          from './routes/fs.js';
+import dashboardRouter   from './routes/dashboard.js';
 import { ToolRegistry }  from './engine/ToolRegistry.js';
 import { schedulerService } from './engine/SchedulerService.js';
 
@@ -48,14 +49,15 @@ app.use(express.json({ limit: '2mb' }));
 app.get('/health', (_req, res) => res.json({ status: 'ok', ts: new Date().toISOString() }));
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
-app.use('/api/agents',       agentsRouter);
-app.use('/api/tools',        toolsRouter);
-app.use('/api/tasks',        tasksRouter);
-app.use('/api/task-runs',    taskRunsRouter);
-app.use('/api/schedules',    schedulesRouter);
-app.use('/api/history',      historyRouter);
-app.use('/api/llm-settings', llmSettingsRouter);
-app.use('/api/fs',           fsRouter);
+app.use('/api/dashboard',     dashboardRouter);
+app.use('/api/agents',        agentsRouter);
+app.use('/api/tools',         toolsRouter);
+app.use('/api/tasks',         tasksRouter);
+app.use('/api/task-runs',     taskRunsRouter);
+app.use('/api/schedules',     schedulesRouter);
+app.use('/api/history',       historyRouter);
+app.use('/api/llm-settings',  llmSettingsRouter);
+app.use('/api/fs',            fsRouter);
 
 // ─── 404 ──────────────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ error: 'Not found' }));

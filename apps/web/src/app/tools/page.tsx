@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import {
   Wrench, Plus, Save, Trash2, Eye, EyeOff,
-  FlaskConical, Plug, ChevronDown, X, RotateCcw, Zap,
+  FlaskConical, Plug, ChevronDown, ChevronRight, X, RotateCcw, Zap,
   FolderOpen, ChevronUp, Loader2,
 } from 'lucide-react';
 import { toolsApi, fsApi, type ToolRow, type FsBrowseResult } from '@/lib/api';
@@ -177,6 +177,19 @@ export default function ToolsPage() {
   const [saving, setSaving]   = useState(false);
   const [testState, setTestState] = useState<TestState>('idle');
   const [pickerEntryId, setPickerEntryId] = useState<string | null>(null);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+
+  const toggleGroup = (group: string) => {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(group)) {
+        next.delete(group);
+      } else {
+        next.add(group);
+      }
+      return next;
+    });
+  };
 
   const load = useCallback(async () => {
     setTools(await toolsApi.list());
@@ -376,15 +389,58 @@ export default function ToolsPage() {
           )}
 
           {groups.map(g => g.items.length > 0 && (
-            <div key={g.title} style={{ marginBottom: 12 }}>
-              <div style={{
-                fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
-                letterSpacing: '0.07em', color: 'var(--text-muted)',
-                padding: '4px 12px 2px', display: 'flex', alignItems: 'center', gap: 5,
-              }}>
-                <span>{g.icon}</span> {g.title}
+            <div key={g.title}>
+              <div 
+                onClick={() => toggleGroup(g.title)}
+                style={{
+                  margin: '8px 10px 6px',
+                  padding: '6px 10px',
+                  fontSize: 10,
+                  fontWeight: 700,
+                  letterSpacing: '0.05em',
+                  textTransform: 'uppercase',
+                  color: 'var(--text-primary)',
+                  background: 'var(--bg-elevated)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 12,
+                  userSelect: 'none',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  transition: 'all 150ms ease',
+                  boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'var(--bg-surface)';
+                  e.currentTarget.style.borderColor = 'var(--accent)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'var(--bg-elevated)';
+                  e.currentTarget.style.borderColor = 'var(--border)';
+                }}
+              >
+                {collapsedGroups.has(g.title) ? (
+                  <ChevronRight width={12} height={12} style={{ color: 'var(--text-muted)' }} />
+                ) : (
+                  <ChevronDown width={12} height={12} style={{ color: 'var(--text-muted)' }} />
+                )}
+                <span>{g.icon}</span>
+                <span style={{ flex: 1 }}>{g.title}</span>
+                <span style={{ 
+                  fontSize: 9,
+                  fontWeight: 600,
+                  background: 'var(--accent-dim)',
+                  color: 'var(--accent-hover)',
+                  padding: '2px 7px',
+                  borderRadius: 100,
+                  minWidth: 20,
+                  textAlign: 'center',
+                }}>
+                  {g.items.length}
+                </span>
               </div>
-              {g.items.map(tool => (
+              {!collapsedGroups.has(g.title) && g.items.map(tool => (
                 <div
                   key={tool.id}
                   className={`list-item${selected?.id === tool.id ? ' selected' : ''}`}

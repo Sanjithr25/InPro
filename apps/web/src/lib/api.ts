@@ -265,3 +265,53 @@ export const historyApi = {
   get:  (id: string) => req<HistoryRunDetail>(`/api/history/${id}`),
   delete: (id: string) => req<{ deleted: boolean }>(`/api/history/${id}`, { method: 'DELETE' }),
 };
+
+// ─── Dashboard ────────────────────────────────────────────────────────────────
+export type DashboardHealth = {
+  active_runs: number;
+  failed_24h: number;
+  enabled_schedules: number;
+  queue_status: 'healthy' | 'delayed' | 'stalled';
+};
+
+export type DashboardActivity = {
+  id: string;
+  node_type: 'task' | 'schedule';
+  node_id: string;
+  status: string;
+  name: string;
+  started_at: string;
+  ended_at: string | null;
+  duration_seconds: number;
+  current_agent: string | null;
+  error_message: string | null;
+};
+
+export type DashboardFailure = {
+  id: string;
+  node_type: 'task' | 'schedule';
+  node_id: string;
+  name: string;
+  failed_agent: string | null;
+  error_message: string | null;
+  created_at: string;
+};
+
+export type DashboardSchedule = {
+  id: string;
+  name: string;
+  next_run_at: string;
+  last_run_status: string | null;
+  last_run_at: string | null;
+};
+
+export type DashboardData = {
+  health: DashboardHealth;
+  activity: DashboardActivity[];
+  failures: DashboardFailure[];
+  next_schedules: DashboardSchedule[];
+};
+
+export const dashboardApi = {
+  get: () => req<DashboardData>('/api/dashboard'),
+};

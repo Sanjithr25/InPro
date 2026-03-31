@@ -4,10 +4,11 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
-  Bot, Wrench, ClipboardList, CalendarClock, History, Settings2, Sun, Moon, Play
+  Bot, Wrench, ClipboardList, CalendarClock, History, Settings2, Sun, Moon, Play, LayoutDashboard
 } from 'lucide-react';
 
 const NAV = [
+  { label: 'Dashboard',  href: '/dashboard',  icon: LayoutDashboard },
   { label: 'Agents',     href: '/agents',     icon: Bot },
   { label: 'Tools',      href: '/tools',      icon: Wrench },
   { label: 'Tasks',      href: '/tasks',      icon: ClipboardList },
