@@ -2,10 +2,10 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import pool from '../db/client.js';
-import { AgentNode } from '../engine/AgentNode.js';
+import { executeAgent } from '../engine/agent/executeAgent.js';
 import { LLMProviderFactory, type ChatMessage } from '../engine/LLMProviderFactory.js';
 import { ToolRegistry } from '../engine/ToolRegistry.js';
-import type { ExecutionContext, ToolDefinition } from '../types.js';
+import type { ToolDefinition } from '../types.js';
 
 const router = Router();
 
@@ -123,11 +123,21 @@ Instructions:
 
 Return ONLY the group name, nothing else. No explanation, no punctuation, just the group name.`;
 
+  // Inject current date for temporal context
+  const currentDate = new Date().toLocaleDateString('en-US', { 
+    weekday: 'long', 
+    year: 'numeric', 
+    month: 'long', 
+    day: 'numeric' 
+  });
+  const systemPrompt = `Current date: ${currentDate}. Always use this as reference for time-sensitive queries.`;
+
   try {
     let suggestedGroup = '';
     
     // Stream the response to get the group name
     for await (const chunk of llm.chatStream([
+      { role: 'system', content: systemPrompt },
       { role: 'user', content: prompt }
     ], [])) {
       if (chunk.type === 'text') {
@@ -251,32 +261,21 @@ router.post('/:id/dry-run', handle(async (req, res) => {
     return;
   }
 
-  // Step 2: Create execution record
+  // Step 2: Generate runId
   const runId = uuidv4();
-  await pool.query(`
-    INSERT INTO execution_runs 
-      (id, node_type, node_id, is_dry_run, trigger_type, status, input_data, started_at)
-    VALUES ($1, 'agent', $2, true, 'dry_run', 'running', $3, NOW())
-  `, [runId, agentId, JSON.stringify({ prompt: parsed.data.prompt, agentId })]);
 
-  // Step 3: Execute via AgentNode
-  const context: ExecutionContext = {
-    inputData: { prompt: parsed.data.prompt, agentId, runId },
-    currentDepth: 0,
-    totalSteps: 1,
-    maxDepth: 5,
-    parentRunId: null,
+  // Step 3: Execute via executeAgent (creates run record internally)
+  executeAgent({
+    agentId,
+    prompt: parsed.data.prompt,
+    runId,
     isDryRun: true,
-  };
-
-  const agentNode = new AgentNode();
-  
-  // Execute in background
-  agentNode.execute(context).then(async (result) => {
+    mode: 'sync',
+  }).then(async (result) => {
     console.log(`[DryRun] Execution completed for runId: ${runId}, agentId: ${agentId}`);
     console.log(`[DryRun] Result:`, JSON.stringify(result, null, 2));
     
-    // Step 4: Retention policy - keep only last N dry runs per agent (safer OFFSET approach)
+    // Step 4: Retention policy - keep only last N dry runs per agent
     const retentionCount = SystemConfig.get<number>('dryRun.retentionCount', 3);
     
     const deleteResult = await pool.query(`
@@ -297,12 +296,6 @@ router.post('/:id/dry-run', handle(async (req, res) => {
     }
   }).catch(async (err) => {
     console.error('[DryRun] Execution failed:', err);
-    // Ensure the run is marked as failed
-    await pool.query(`
-      UPDATE execution_runs
-      SET status = 'failed', ended_at = NOW(), error_message = $1
-      WHERE id = $2 AND status = 'running'
-    `, [err.message || 'Unknown error', runId]);
   });
 
   // Return immediately with runId
@@ -370,16 +363,12 @@ router.post('/:id/run', handle(async (req, res) => {
 
   const agentId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
 
-  const context: ExecutionContext = {
-    inputData: { prompt: parsed.data.prompt, agentId },
-    currentDepth: 0,
-    totalSteps: 1,
-    maxDepth: 5,
-    parentRunId: null,
-  };
+  const result = await executeAgent({
+    agentId,
+    prompt: parsed.data.prompt,
+    mode: 'sync',
+  });
 
-  const agentNode = new AgentNode();
-  const result = await agentNode.execute(context);
   res.json({ data: result });
 }));
 

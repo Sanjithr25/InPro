@@ -115,11 +115,11 @@ function RunDrawer({ runId, onClose, onDelete }: { runId: string; onClose: () =>
         ) : run && (
           <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 20, overflowY: 'auto' }}>
 
-            {/* Children */}
-            {run.children && run.children.length > 0 && (
+            {/* Children (only for schedule runs, not task runs since tasks show pipeline) */}
+            {run.children && run.children.length > 0 && run.node_type === 'schedule' && (
               <div>
                 <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                  {run.node_type === 'schedule' ? 'Task Runs' : 'Agent Runs'} ({run.children.length})
+                  Task Runs ({run.children.length})
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {run.children.map((child, i) => (
@@ -130,14 +130,92 @@ function RunDrawer({ runId, onClose, onDelete }: { runId: string; onClose: () =>
             )}
 
             {/* Output */}
-            {(run.output_data as { text?: string })?.text && (
+            {run.output_data && (
               <div>
-                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Final Output</div>
-                <div style={{
-                  background: 'var(--bg-base)', border: '1px solid var(--border)', borderRadius: 8,
-                  padding: '14px 16px', fontSize: 13, color: 'var(--text-primary)',
-                  lineHeight: 1.7, whiteSpace: 'pre-wrap', maxHeight: 400, overflowY: 'auto',
-                }}>{(run.output_data as { text: string }).text}</div>
+                {/* Task Pipeline Output */}
+                {run.node_type === 'task' && (run.output_data as any).steps && Array.isArray((run.output_data as any).steps) && (
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                      Pipeline Execution ({((run.output_data as any).steps as Array<any>).length} steps)
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      {((run.output_data as any).steps as Array<{ stepName: string; agentId: string; output: string; runId: string }>).map((step, idx) => {
+                        // Find the corresponding child agent run for this step
+                        const agentRun = run.children?.find(c => c.id === step.runId);
+                        const toolsUsed = agentRun?.output_data ? (agentRun.output_data as any).toolsUsed : null;
+                        
+                        return (
+                          <div key={idx} style={{
+                            border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', background: 'var(--bg-elevated)'
+                          }}>
+                            <div style={{
+                              padding: '10px 14px', background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)',
+                              display: 'flex', alignItems: 'center', gap: 10
+                            }}>
+                              <span style={{
+                                width: 22, height: 22, borderRadius: '50%', background: 'var(--accent)',
+                                color: '#fff', fontSize: 10, fontWeight: 700, flexShrink: 0,
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              }}>{idx + 1}</span>
+                              <div style={{ flex: 1 }}>
+                                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{step.stepName}</div>
+                                {agentRun && (
+                                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    <span>Agent: <span style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>{(agentRun as any).agent_name || 'Unknown'}</span></span>
+                                    {(agentRun as any).agent_group && (
+                                      <span style={{ opacity: 0.7 }}>• {(agentRun as any).agent_group}</span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                              {toolsUsed && Array.isArray(toolsUsed) && toolsUsed.length > 0 && (
+                                <div style={{ fontSize: 10, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                                  <span style={{ fontWeight: 600 }}>{toolsUsed.length}</span> tool{toolsUsed.length !== 1 ? 's' : ''}
+                                </div>
+                              )}
+                            </div>
+                            <div style={{ padding: '12px 14px' }}>
+                              {toolsUsed && Array.isArray(toolsUsed) && toolsUsed.length > 0 && (
+                                <div style={{ marginBottom: 10, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                                  {toolsUsed.map((tool: string, i: number) => (
+                                    <span key={i} style={{
+                                      fontSize: 10, padding: '2px 8px', borderRadius: 4,
+                                      background: 'var(--bg-base)', border: '1px solid var(--border)',
+                                      color: 'var(--text-secondary)', fontFamily: 'monospace'
+                                    }}>
+                                      {tool}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                              <div style={{
+                                fontSize: 12, color: 'var(--text-primary)', lineHeight: 1.6, whiteSpace: 'pre-wrap',
+                                maxHeight: 200, overflowY: 'auto', background: 'var(--bg-base)', borderRadius: 6,
+                                padding: '10px 12px', border: '1px solid var(--border)'
+                              }}>
+                                {step.output}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Agent Output (non-task runs) */}
+                {run.node_type !== 'task' && (run.output_data as any).text && (
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Output</div>
+                    <div style={{
+                      background: 'var(--bg-base)', border: '1px solid var(--border)', borderRadius: 8,
+                      padding: '14px 16px', fontSize: 13, color: 'var(--text-primary)',
+                      lineHeight: 1.7, whiteSpace: 'pre-wrap', maxHeight: 400, overflowY: 'auto',
+                    }}>
+                      {(run.output_data as any).text}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -193,7 +271,9 @@ function ChildRow({ child, idx, parentType }: {
           
           {(child.input_data as any)?.prompt && (
             <div>
-              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase' }}>Instructions from Manager</div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase' }}>
+                {(child.input_data as any)?.stepName ? 'Step Instructions' : 'Instructions from Manager'}
+              </div>
               <div style={{ fontSize: 12, color: 'var(--text-secondary)', fontStyle: 'italic', background: 'rgba(0,0,0,0.02)', padding: '6px 8px', borderRadius: 4 }}>
                 {(child.input_data as any).prompt}
               </div>

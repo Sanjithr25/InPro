@@ -23,11 +23,14 @@ const handle = (fn: (req: Request, res: Response) => Promise<void>) =>
   (req: Request, res: Response, next: NextFunction) => fn(req, res).catch(next);
 
 // ─── WorkflowStep schema ──────────────────────────────────────────────────────
+// CRITICAL: inputTemplate is REQUIRED and must be a fully executable prompt
+// Supports placeholders: {{input}} (initial task input) and {{stepId}} (output from step with that ID)
 const WorkflowStepSchema = z.object({
-  agentId:        z.string().uuid(),
-  stepName:       z.string().min(1),
-  description:    z.string().default(''),
-  promptOverride: z.string().optional(),
+  id:            z.string().min(1),  // REQUIRED: unique step identifier
+  agentId:       z.string().uuid(),
+  stepName:      z.string().min(1),
+  inputTemplate: z.string().min(1), // REQUIRED: fully executable prompt with placeholders
+  dependsOn:     z.array(z.string()).default([]), // Array of step IDs this step depends on
 });
 
 const TaskSchema = z.object({
@@ -183,16 +186,74 @@ router.post('/generate-workflow', handle(async (req, res) => {
     `- Agent: "${a.name}" (id: ${a.id})\n  Skill: ${(a.skill as string).slice(0, 120)}…`
   ).join('\n');
 
-  const systemPrompt = `You are a workflow planner. Given a task description and a list of AI agents, generate a linear step-by-step workflow. Each step must be assigned to one of the provided agents.
+  const systemPrompt = `You are a workflow planner. Given a task description and a list of AI agents, generate a DAG-based workflow. Each step must be assigned to one of the provided agents and can depend on multiple previous steps.
 
-  CRITICAL: Your entire response must be ONLY a valid JSON array. Do NOT include any explanation, markdown, code fences, or preamble. Start your response with [ and end with ].
+  CRITICAL REQUIREMENTS:
+  1. Your entire response must be ONLY a valid JSON array. Do NOT include any explanation, markdown, code fences, or preamble. Start your response with [ and end with ].
+  2. Each step MUST have:
+     - "id": unique identifier (e.g., "step1", "step2")
+     - "agentId": agent UUID from the provided list
+     - "stepName": short descriptive title
+     - "inputTemplate": fully executable prompt for that agent
+     - "dependsOn": array of step IDs this step depends on (empty array for root steps)
+  3. The inputTemplate can use these placeholders:
+     - {{input}} = the initial task input/description
+     - {{stepId}} = the output from step with that ID (e.g., {{step1}}, {{step2}})
+  4. The inputTemplate must be specific and actionable - it will be executed directly without interpretation.
+  5. You can create parallel workflows by having multiple steps with the same dependencies.
+  6. Ensure no circular dependencies exist.
 
   Format:
   [
     {
+      "id": "step1",
       "agentId": "<agent id from the list>",
       "stepName": "<short step title>",
-      "description": "<what this agent should do in this step, 2-3 sentences>"
+      "inputTemplate": "<fully executable prompt with {{input}} and/or {{stepId}} placeholders>",
+      "dependsOn": []
+    }
+  ]
+
+  Example (linear workflow):
+  [
+    {
+      "id": "step1",
+      "agentId": "abc-123",
+      "stepName": "Research Requirements",
+      "inputTemplate": "Research and analyze the following requirements: {{input}}. Provide a detailed analysis of technical feasibility and constraints.",
+      "dependsOn": []
+    },
+    {
+      "id": "step2",
+      "agentId": "def-456",
+      "stepName": "Design Solution",
+      "inputTemplate": "Based on this analysis: {{step1}}, design a technical solution that addresses all requirements. Include architecture diagrams and component specifications.",
+      "dependsOn": ["step1"]
+    }
+  ]
+
+  Example (parallel + merge workflow):
+  [
+    {
+      "id": "step1",
+      "agentId": "abc-123",
+      "stepName": "Research Market",
+      "inputTemplate": "Research market trends for: {{input}}",
+      "dependsOn": []
+    },
+    {
+      "id": "step2",
+      "agentId": "def-456",
+      "stepName": "Research Competitors",
+      "inputTemplate": "Research competitors for: {{input}}",
+      "dependsOn": []
+    },
+    {
+      "id": "step3",
+      "agentId": "ghi-789",
+      "stepName": "Synthesize Report",
+      "inputTemplate": "Create a comprehensive report combining market analysis: {{step1}} and competitor analysis: {{step2}}",
+      "dependsOn": ["step1", "step2"]
     }
   ]`;
 
@@ -201,11 +262,25 @@ router.post('/generate-workflow', handle(async (req, res) => {
   Available agents:
   ${agentList}
 
-  Generate a workflow of ${Math.min(agents.length, 5)} steps using these agents.`;
+  Generate a workflow of ${Math.min(agents.length, 5)} steps using these agents. Each step must have:
+  - A unique "id" field (e.g., "step1", "step2")
+  - A specific "inputTemplate" that will be executed directly
+  - A "dependsOn" array listing step IDs it depends on (empty for root steps)
+  
+  Consider if any steps can run in parallel (same dependencies) or if the workflow should be linear.`;
+
+  // Inject current date for temporal context
+  const currentDate = new Date().toLocaleDateString('en-US', { 
+    weekday: 'long', 
+    year: 'numeric', 
+    month: 'long', 
+    day: 'numeric' 
+  });
+  const systemPromptWithDate = `Current date: ${currentDate}. Always use this as reference for time-sensitive queries.\n\n${systemPrompt}`;
 
   const response = await llm.chat(
     [
-      { role: 'system', content: systemPrompt },
+      { role: 'system', content: systemPromptWithDate },
       { role: 'user',   content: userPrompt },
     ],
     [],
@@ -254,11 +329,24 @@ router.post('/generate-workflow', handle(async (req, res) => {
   // Validate + sanitize each step
   const validated = steps
     .map((s: any) => ({
-      agentId:     s.agentId ?? s.agent_id ?? '',
-      stepName:    s.stepName ?? s.step_name ?? s.name ?? 'Step',
-      description: s.description ?? '',
+      id:            s.id ?? '',
+      agentId:       s.agentId ?? s.agent_id ?? '',
+      stepName:      s.stepName ?? s.step_name ?? s.name ?? 'Step',
+      inputTemplate: s.inputTemplate ?? s.input_template ?? s.prompt ?? '',
+      dependsOn:     Array.isArray(s.dependsOn) ? s.dependsOn : (Array.isArray(s.depends_on) ? s.depends_on : []),
     }))
-    .filter(s => agentIds.includes(s.agentId));
+    .filter(s => s.id && agentIds.includes(s.agentId) && s.inputTemplate.trim() !== '');
+
+  // Validate that all steps have required fields
+  const invalidSteps = validated.filter(s => !s.id || !s.agentId || !s.stepName || !s.inputTemplate);
+  if (invalidSteps.length > 0) {
+    res.status(422).json({
+      error: 'Generated workflow has invalid steps',
+      hint: 'Some steps are missing required fields (id, agentId, stepName, or inputTemplate)',
+      invalidSteps,
+    });
+    return;
+  }
 
   res.json({ data: { steps: validated } });
 }));

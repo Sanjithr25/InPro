@@ -96,10 +96,11 @@ export const toolsApi = {
 
 // ─── Tasks ────────────────────────────────────────────────────────────────────
 export type WorkflowStep = {
+  id: string;                    // REQUIRED: unique step identifier
   agentId: string;
   stepName: string;
-  description: string;
-  promptOverride?: string;
+  inputTemplate: string;         // REQUIRED: fully executable prompt with {{input}} and {{stepId}} placeholders
+  dependsOn: string[];           // Array of step IDs this step depends on (empty = root step)
 };
 
 export type TaskRow = {

@@ -1,5 +1,13 @@
 // ─── Execution Engine Types ──────────────────────────────────────────────────
 
+export interface WorkflowStep {
+  id: string;                    // REQUIRED: unique step identifier
+  agentId: string;
+  stepName: string;
+  inputTemplate: string;         // REQUIRED: fully executable prompt with {{input}} and {{stepId}} placeholders
+  dependsOn: string[];           // Array of step IDs this step depends on (empty = root step)
+}
+
 export interface ExecutionContext {
   inputData: Record<string, unknown>;
   currentDepth: number;

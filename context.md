@@ -83,21 +83,66 @@ Passed explicitly to every `.execute()` call. Must be **strictly JSON-serializab
    - If tool calls → execute via `ToolRegistry.execute(name, args)`, append results as user messages, loop
 5. Persist result to `execution_runs`
 
-### TaskNode Linear Orchestrator (`src/engine/TaskNode.ts`) ✅ NEW
-1. Load task from `tasks` table — reads `workflow_definition` (ordered step array)
-2. Create parent `execution_run` record (`node_type='task'`)
-3. For each step in order:
-   - Create child `execution_run` (`node_type='agent'`, `parent_run_id=taskRunId`)
-   - Build step prompt — injects previous step's output as context
-   - Run `AgentNode.execute()` with step's `agentId`
-   - On failure → mark task failed, stop chain
-   - On success → collect output, pass to next step
-4. Mark task `completed` with full chain output
+### TaskNode DAG Workflow Executor (`src/engine/TaskNode.ts`) ✅ REFACTORED
+**Architecture**: Dependency-driven DAG (Directed Acyclic Graph) execution engine
 
-**Step prompt construction:**
-- Step 1: receives the task description + initial user prompt
-- Step N+1: receives the task description + previous step's full text output
-- This creates a natural "research → summarize → report" chain
+**Workflow Format**:
+```typescript
+[
+  {
+    id: "step1",              // REQUIRED: unique step identifier
+    agentId: "uuid",          // Agent to execute this step
+    stepName: "Research",     // Human-readable name
+    inputTemplate: "...",     // Executable prompt with placeholders
+    dependsOn: []             // Array of step IDs (empty = root step)
+  }
+]
+```
+
+**Execution Flow**:
+1. Load task from `tasks` table — reads `workflow_definition` (DAG step array)
+2. Validate workflow: unique IDs, no cycles, valid dependencies, no self-references
+3. Create parent `execution_run` record (`node_type='task'`)
+4. Build DAG: identify root steps (no dependencies) and terminal steps (not depended on)
+5. Execute steps when dependencies satisfied:
+   - Find runnable steps (all dependencies completed)
+   - Execute up to MAX_PARALLEL (3) steps concurrently using `Promise.all`
+   - Resolve template placeholders: `{{input}}` (initial prompt), `{{stepId}}` (step outputs)
+   - Create child `execution_run` for each step
+   - On failure → mark task failed, stop execution
+   - On success → store output, continue to dependent steps
+6. Collect final outputs from terminal nodes
+7. Mark task `completed` with full DAG output
+
+**Placeholder System**:
+- `{{input}}` — Initial task input/prompt
+- `{{stepId}}` — Output from specific step (e.g., `{{step1}}`, `{{step2}}`)
+- Example: `"Combine {{step1}} and {{step2}} to create report about {{input}}"`
+
+**Supported Patterns**:
+- **Linear**: `step1 → step2 → step3` (sequential execution)
+- **Parallel**: `step1, step2 → step3` (independent steps run concurrently)
+- **Diamond**: `step1 → step2, step3 → step4` (fork and merge)
+- **Multi-dependency**: Steps can depend on multiple previous steps
+
+**Validation**:
+- All step IDs must be unique
+- All dependencies must reference existing steps
+- No self-dependencies allowed
+- No circular dependencies (DFS cycle detection)
+- All required fields present (id, agentId, stepName, inputTemplate, dependsOn)
+
+**Output Format**:
+```typescript
+{
+  steps: [
+    { stepId, stepName, agentId, output, runId }
+  ],
+  finalOutput: {
+    step3: "Final output from terminal step..."
+  }
+}
+```
 
 ### `LLMProviderFactory` (`src/engine/LLMProviderFactory.ts`)
 Factory builds a `ChatProvider` from a config object (sourced from `llm_settings` DB row):
@@ -192,14 +237,21 @@ Stores provider configurations. One row per provider. `is_default = true` is use
 #### `agent_tools`
 Join table — `(agent_id, tool_id)` composite PK.
 
-#### `tasks` ✅
+#### `tasks` ✅ DAG WORKFLOWS
 | Column | Type | Notes |
 |---|---|---|
 | `id` | UUID PK | |
 | `name` | TEXT UNIQUE | |
 | `description` | TEXT | Also used as context for LLM workflow generation |
-| `workflow_definition` | JSONB | `Array<{ agentId, stepName, description, promptOverride? }>` |
+| `workflow_definition` | JSONB | `Array<{ id, agentId, stepName, inputTemplate, dependsOn[] }>` |
 | `created_at` / `updated_at` | TIMESTAMPTZ | |
+
+**Workflow Definition Schema**:
+- `id` (string): Unique step identifier (e.g., "step1", "research_market")
+- `agentId` (UUID): Agent to execute this step
+- `stepName` (string): Human-readable step name
+- `inputTemplate` (string): Executable prompt with `{{input}}` and `{{stepId}}` placeholders
+- `dependsOn` (string[]): Array of step IDs this step depends on (empty = root step)
 
 #### `schedules`
 | Column | Type | Notes |
@@ -254,7 +306,7 @@ All routes are under the Express API at `http://localhost:3001`.
 | PUT | `/api/tools/:id` | Update tool |
 | DELETE | `/api/tools/:id` | Delete tool |
 
-### `/api/tasks` ✅ NEW
+### `/api/tasks` ✅ DAG WORKFLOWS
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/tasks` | List tasks with `step_count`, `last_run_status`, `last_run_at` |
@@ -262,8 +314,9 @@ All routes are under the Express API at `http://localhost:3001`.
 | POST | `/api/tasks` | Create task `{ name, description, workflow_definition[] }` |
 | PUT | `/api/tasks/:id` | Update task |
 | DELETE | `/api/tasks/:id` | Delete task |
-| POST | `/api/tasks/:id/run` | Execute task `{ prompt? }` — runs all steps sync, returns full result |
-| POST | `/api/tasks/generate-workflow` | LLM generates steps `{ description, agentIds[] }` → `{ steps[] }` |
+| POST | `/api/tasks/:id/run` | Execute task `{ prompt? }` — runs DAG workflow, returns full result |
+| POST | `/api/tasks/:id/dry-run` | Test workflow without saving to history |
+| POST | `/api/tasks/generate-workflow` | LLM generates DAG steps `{ description, agentIds[], llmProviderId? }` → `{ steps[] }` |
 
 ### `/api/llm-settings`
 | Method | Path | Description |
@@ -301,12 +354,18 @@ All routes are under the Express API at `http://localhost:3001`.
 - Built-ins are seeded automatically on server startup — no install flow
 - Click to configure (edit config, schema, enable/disable), edit group, `+` to create new
 
-### Tasks Page (`/tasks`) ✅ NEW
+### Tasks Page (`/tasks`) ✅ DAG WORKFLOWS
 - **Sidebar**: task list with last-run status badge (`completed`/`failed`/`running`), step count, time since last run
 - **Task Identity card**: name + description (description used for LLM generation)
-- **AI Workflow Generator card**: agent chip-select → LLM plans steps from description
-- **Workflow Steps editor**: drag-to-reorder, add/remove, per-step agent selector + description
-- **Agent flow preview**: `Agent A → Agent B → Agent C` visualization
+- **AI Workflow Generator card**: agent chip-select → LLM plans DAG workflow from description
+- **DAG Visualization card**: Shows root steps (no dependencies), terminal steps (final outputs), and dependency graph
+- **Workflow Steps editor**: 
+  - Add/edit/delete steps with unique IDs
+  - Per-step: ID, name, agent selector, input template
+  - Dependency builder: multi-select buttons to choose which steps this step depends on
+  - Validation: prevents self-dependencies and circular dependencies
+  - Input template supports `{{input}}` and `{{stepId}}` placeholders
+- **Dry Run card**: Test workflow execution without saving to history
 
 ### Task Runs Page (`/task-runs`) ✅ NEW
 - **Live tracker**: Lists all tasks and their active or previous runs.
@@ -398,7 +457,7 @@ npm run dev:web   # → http://localhost:3000
 |---|---|---|
 | 1 | Walking skeleton: monorepo, DB, AgentNode, API, basic UI | ✅ Complete |
 | 2 | Tool Layer: DB-driven ToolRegistry, built-ins auto-seeded, tools page | ✅ Complete |
-| 3 | **Orchestration**: `TaskNode` linear chaining, multi-agent runs, AI workflow generation | ✅ Complete |
+| 3 | **Orchestration**: `TaskNode` DAG execution, multi-agent workflows, parallel execution, AI workflow generation | ✅ Complete |
 | 4 | **Async dispatch**: Redis + BullMQ, non-blocking execution, Scheduler UI, unified Run History | ✅ Complete |
 | 5 | **Observability**: deeper run tree browser, export, metrics | 🔲 |
 | 6 | Vector DB: Milvus integration, semantic memory for agents | 🔲 |
@@ -414,6 +473,11 @@ npm run dev:web   # → http://localhost:3000
 - **Built-ins auto-seed on startup** — `ToolRegistry.seed()` is called in `index.ts` before the server starts accepting requests. Uses `ON CONFLICT (name) DO NOTHING` — safe to call repeatedly.
 - **web_search uses terminal errors** — DuckDuckGo sometimes returns empty body (causes `SyntaxError` on `res.json()`). All failure paths return `error: 'terminal'` with explicit "do not retry" instructions to prevent the model from looping.
 - **Task step prompts are context-aware** — Step 1 gets the task description + user prompt. All subsequent steps get the previous step's full output injected as context, enabling natural research → synthesize → report chains.
+- **DAG-based workflows** — Tasks now support Directed Acyclic Graph execution with dependencies, parallel execution (MAX_PARALLEL=3), and multi-input steps. Steps execute when all dependencies are satisfied. Supports linear, parallel, and diamond patterns.
+- **Workflow validation** — Comprehensive validation prevents circular dependencies, self-references, duplicate IDs, and missing dependencies. Uses DFS cycle detection algorithm.
+- **Placeholder system** — Input templates support `{{input}}` (initial prompt) and `{{stepId}}` (step outputs) for flexible data flow between steps.
+- **Terminal node detection** — Automatically identifies final output steps (not depended on by others) and collects their outputs separately.
+- **Migration script** — `scripts/migrate-task-workflows.js` converts existing linear workflows to DAG format, adding IDs and dependencies automatically.
 - **Execution tree is fully logged** — every `TaskNode` run creates a parent `execution_run` with child `execution_run` records per agent step, linked via `parent_run_id`. Ready for the Run History UI.
 - **Kill signals override autonomous completion** — if `ctx.abortSignal?.aborted` fires inside `TaskNode` or `AgentNode`, the node saves partial output data but securely respects the DB's `.status = 'failed'` (set by the kill route) to prevent resurrected tasks.
 - **API rate limits increased** — `express-rate-limit` inside `index.ts` allows 5000 requests to properly support the robust frontend interval loop fetching updates `taskRunsApi.get` for expanded active runs without returning 429 error bodies that break Next.js JSON parser.
@@ -612,4 +676,133 @@ WHERE id IN (
 - ✅ API validation schemas updated
 - ✅ Execution engine respects constraints
 - ✅ Risk badges display correctly
+
+
+---
+
+## 11. DAG Workflow System ✅ COMPLETE
+
+### Overview
+Tasks now support Directed Acyclic Graph (DAG) based workflows, enabling complex multi-agent orchestration with dependencies, parallel execution, and flexible data flow.
+
+### Key Features
+
+**Workflow Patterns Supported**:
+- **Linear**: Sequential step execution (step1 → step2 → step3)
+- **Parallel**: Independent steps run concurrently (step1, step2 → step3)
+- **Diamond**: Fork and merge patterns (step1 → step2, step3 → step4)
+- **Multi-dependency**: Steps depending on multiple previous steps
+
+**Execution Engine**:
+- Dependency-driven execution (steps run when all dependencies satisfied)
+- Parallel execution with MAX_PARALLEL=3 concurrent steps
+- Automatic root/terminal node detection
+- Comprehensive validation (no cycles, no self-deps, unique IDs)
+- DFS-based cycle detection algorithm
+
+**Placeholder System**:
+- `{{input}}` — Initial task input/prompt
+- `{{stepId}}` — Output from specific step (e.g., `{{step1}}`, `{{step2}}`)
+- Enables flexible data flow between steps
+
+**Frontend Features**:
+- Visual DAG editor with dependency builder
+- Multi-select dependency UI (chip-based selection)
+- DAG visualization showing root steps, terminal steps, and dependency graph
+- AI workflow generator creates DAG workflows from descriptions
+- Real-time validation preventing invalid DAG structures
+- Dry run testing without saving to history
+
+**Backend Implementation**:
+- `TaskNode.ts` — DAG execution engine with parallel step execution
+- Comprehensive workflow validation before execution
+- Terminal node output collection
+- Full execution logging with step-by-step tracking
+- Abort signal support for kill operations
+
+### Migration
+**Script**: `scripts/migrate-task-workflows.js`
+
+Converts existing linear workflows to DAG format:
+- Adds unique `id` field to each step (step1, step2, etc.)
+- Adds `dependsOn` array (linear chain: step2 depends on step1)
+- Replaces `{{prev}}` placeholders with `{{stepN}}` references
+- Idempotent (skips already-migrated tasks)
+
+**Usage**:
+```bash
+node scripts/migrate-task-workflows.js
+```
+
+### Documentation
+**File**: `Docs/DAG_Workflows.md`
+
+Comprehensive guide covering:
+- Workflow format and field definitions
+- Execution rules and validation
+- Supported workflow patterns with examples
+- Frontend features and UI components
+- Backend implementation details
+- Migration instructions
+- API endpoints
+- Best practices and constraints
+
+### Files Modified/Created
+
+**Backend**:
+- `apps/api/src/engine/TaskNode.ts` — Refactored to DAG execution
+- `apps/api/src/routes/tasks.ts` — Updated workflow generation and validation
+- `packages/shared/src/types.ts` — Updated WorkflowStep interface
+- `scripts/migrate-task-workflows.js` — Migration script (new)
+
+**Frontend**:
+- `apps/web/src/app/tasks/page.tsx` — Complete DAG editor UI
+- `apps/web/src/lib/api.ts` — Updated WorkflowStep type
+
+**Documentation**:
+- `Docs/DAG_Workflows.md` — Comprehensive DAG workflow guide (new)
+- `context.md` — Updated with DAG workflow information
+
+### Validation Rules
+- All step IDs must be unique
+- All dependencies must reference existing steps
+- No self-dependencies (step cannot depend on itself)
+- No circular dependencies (enforced via DFS cycle detection)
+- All required fields present (id, agentId, stepName, inputTemplate, dependsOn)
+- dependsOn must be an array (can be empty for root steps)
+
+### Output Format
+```json
+{
+  "steps": [
+    {
+      "stepId": "step1",
+      "stepName": "Research",
+      "agentId": "uuid",
+      "output": "Research results...",
+      "runId": "uuid"
+    }
+  ],
+  "finalOutput": {
+    "step3": "Final report output..."
+  }
+}
+```
+
+### Performance
+- Parallel execution limited to MAX_PARALLEL=3 concurrent steps
+- Steps execute immediately when dependencies satisfied
+- No polling or waiting between steps
+- Efficient Map-based dependency tracking
+- O(1) lookup for completed steps
+
+### Future Enhancements
+Potential improvements documented in `Docs/DAG_Workflows.md`:
+- Visual DAG editor with drag-and-drop
+- Conditional execution (if/else branches)
+- Loop support (iterate over lists)
+- Dynamic parallelism (adjust MAX_PARALLEL)
+- Step retry logic
+- Partial workflow execution
+- Workflow templates library
 

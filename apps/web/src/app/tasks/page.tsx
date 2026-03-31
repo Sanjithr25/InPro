@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Plus, Save, Trash2, Loader2, ChevronDown,
   GitBranch, Sparkles, GripVertical, X, CheckCircle2,
-  XCircle, Clock, Zap, ArrowRight, Play, FlaskConical,
+  XCircle, Zap, ArrowRight, FlaskConical, Network,
 } from 'lucide-react';
 import {
   tasksApi, agentsApi, llmApi,
@@ -18,6 +18,8 @@ const blankTask = (): Omit<TaskRow, 'id' | 'created_at'> & { entries: WorkflowSt
   entries: [],
   llm_provider_id: null,
 });
+
+const generateStepId = (index: number) => `step${index + 1}`;
 
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 export default function TasksPage() {
@@ -39,9 +41,6 @@ export default function TasksPage() {
   const [dryRunPrompt, setDryRunPrompt] = useState('');
   const [dryRunning, setDryRunning]     = useState(false);
   const [dryRunResult, setDryRunResult] = useState<{ success: boolean; output: { text: string; steps: number }; error?: string } | null>(null);
-
-  // Drag-drop
-  const dragIdx = useRef<number | null>(null);
 
   const load = useCallback(async () => {
     const [t, a, l] = await Promise.all([tasksApi.list(), agentsApi.list(), llmApi.list()]);
@@ -135,7 +134,6 @@ export default function TasksPage() {
     if (!selected) return;
     setDryRunning(true);
     setDryRunResult(null);
-    // Auto-save first to ensure DB has latest workflow
     try {
       await tasksApi.update(selected.id, {
         name: form.name, description: form.description,
@@ -153,7 +151,14 @@ export default function TasksPage() {
   // ── Step management ────────────────────────────────────────────────────────
   const addStep = () => {
     if (agents.length === 0) return;
-    const step: WorkflowStep = { agentId: agents[0].id, stepName: 'New Step', description: '' };
+    const newId = generateStepId(form.entries.length);
+    const step: WorkflowStep = { 
+      id: newId,
+      agentId: agents[0].id, 
+      stepName: 'New Step', 
+      inputTemplate: 'Execute the following task: {{input}}',
+      dependsOn: [],
+    };
     setForm(f => ({ ...f, entries: [...f.entries, step] }));
   };
 
@@ -163,27 +168,36 @@ export default function TasksPage() {
   const removeStep = (i: number) =>
     setForm(f => ({ ...f, entries: f.entries.filter((_, idx) => idx !== i) }));
 
-  // ── Drag-drop reorder ──────────────────────────────────────────────────────
-  const onDragStart = (i: number) => { dragIdx.current = i; };
-  const onDragOver  = (e: React.DragEvent, i: number) => {
-    e.preventDefault();
-    const from = dragIdx.current;
-    if (from === null || from === i) return;
+  // ── Dependency management ──────────────────────────────────────────────────
+  const toggleDependency = (stepIndex: number, depId: string) => {
     setForm(f => {
-      const next = [...f.entries];
-      const [item] = next.splice(from, 1);
-      next.splice(i, 0, item);
-      dragIdx.current = i;
-      return { ...f, entries: next };
+      const step = f.entries[stepIndex];
+      const deps = step.dependsOn || [];
+      const newDeps = deps.includes(depId) 
+        ? deps.filter(d => d !== depId)
+        : [...deps, depId];
+      return {
+        ...f,
+        entries: f.entries.map((s, idx) => 
+          idx === stepIndex ? { ...s, dependsOn: newDeps } : s
+        )
+      };
     });
   };
-  const onDragEnd = () => { dragIdx.current = null; };
 
   // ── Agent multi-select for generation ─────────────────────────────────────
   const toggleGenAgent = (id: string) =>
     setGenAgentIds(prev => prev.includes(id) ? prev.filter(a => a !== id) : [...prev, id]);
 
   const agentName = (id: string) => agents.find(a => a.id === id)?.name ?? id;
+
+  // ── DAG Visualization helpers ─────────────────────────────────────────────
+  const getRootSteps = () => form.entries.filter(s => !s.dependsOn || s.dependsOn.length === 0);
+  const getTerminalSteps = () => {
+    const dependedOn = new Set<string>();
+    form.entries.forEach(s => s.dependsOn?.forEach(d => dependedOn.add(d)));
+    return form.entries.filter(s => !dependedOn.has(s.id));
+  };
 
   const showForm = isNew || selected !== null;
 
@@ -275,7 +289,7 @@ export default function TasksPage() {
               <div>
                 <div className="page-title">{isNew ? 'New Task' : selected?.name}</div>
                 <div className="page-subtitle">
-                  {isNew ? 'Define a multi-agent workflow' : `ID: ${selected?.id}`}
+                  {isNew ? 'Define a DAG-based workflow' : `ID: ${selected?.id}`}
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 8, flexShrink: 0, alignItems: 'center' }}>
@@ -351,7 +365,7 @@ export default function TasksPage() {
             <div className="card">
               <div className="card-title"><Sparkles width={16} height={16} /> AI Workflow Generator</div>
               <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
-                Select agents and let the LLM auto-generate the step sequence from your task description.
+                Select agents and let the LLM auto-generate a DAG workflow with dependencies from your task description.
               </p>
 
               {/* Agent multi-select */}
@@ -393,16 +407,95 @@ export default function TasksPage() {
               >
                 {generating
                   ? <><Loader2 width={13} height={13} className="spin" /> Generating…</>
-                  : <><Sparkles width={13} height={13} /> Generate Workflow Steps</>
+                  : <><Sparkles width={13} height={13} /> Generate DAG Workflow</>
                 }
               </button>
 
               {generating && (
                 <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 10 }}>
-                  Asking LLM to plan the workflow — this may take a few seconds…
+                  Asking LLM to plan the DAG workflow — this may take a few seconds…
                 </p>
               )}
             </div>
+
+            {/* ── DAG Visualization ──────────────────────────────────────────── */}
+            {form.entries.length > 0 && (
+              <div className="card">
+                <div className="card-title"><Network width={16} height={16} /> Workflow DAG Visualization</div>
+                <div style={{ 
+                  padding: '16px', 
+                  background: 'var(--bg-surface)', 
+                  borderRadius: 'var(--radius)',
+                  border: '1px solid var(--border)',
+                }}>
+                  {/* Root steps */}
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 6 }}>
+                      Root Steps (no dependencies):
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      {getRootSteps().map((s, idx) => (
+                        <span key={s.id || `root-${idx}`} style={{
+                          fontSize: 11, padding: '3px 10px', borderRadius: 12,
+                          background: 'var(--accent)', color: '#fff', fontWeight: 600,
+                        }}>
+                          {s.stepName}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Terminal steps */}
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 6 }}>
+                      Terminal Steps (final outputs):
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      {getTerminalSteps().map((s, idx) => (
+                        <span key={s.id || `terminal-${idx}`} style={{
+                          fontSize: 11, padding: '3px 10px', borderRadius: 12,
+                          background: 'var(--green)', color: '#fff', fontWeight: 600,
+                        }}>
+                          {s.stepName}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Dependency graph */}
+                  <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 6 }}>
+                    Dependency Graph:
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {form.entries.map((step, idx) => (
+                      <div key={step.id || `dep-${idx}`} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{
+                          fontSize: 11, padding: '2px 8px', borderRadius: 8,
+                          background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+                          fontWeight: 600, minWidth: 100,
+                        }}>
+                          {step.stepName}
+                        </span>
+                        {step.dependsOn && step.dependsOn.length > 0 ? (
+                          <>
+                            <ArrowRight width={12} height={12} style={{ color: 'var(--text-muted)' }} />
+                            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                              depends on: {step.dependsOn.map(depId => 
+                                form.entries.find(s => s.id === depId)?.stepName || depId
+                              ).join(', ')}
+                            </span>
+                          </>
+                        ) : (
+                          <span style={{ fontSize: 11, color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                            (root step)
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* ── Workflow Steps ─────────────────────────────────────────────── */}
             <div className="card">
@@ -411,7 +504,7 @@ export default function TasksPage() {
                   <Zap width={16} height={16} /> Workflow Steps
                   {form.entries.length > 0 && (
                     <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-muted)', marginLeft: 8 }}>
-                      {form.entries.length} step{form.entries.length !== 1 ? 's' : ''} — drag to reorder
+                      {form.entries.length} step{form.entries.length !== 1 ? 's' : ''}
                     </span>
                   )}
                 </div>
@@ -428,101 +521,126 @@ export default function TasksPage() {
               )}
 
               {/* Step list */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 {form.entries.map((step, i) => (
                   <div
                     key={i}
-                    draggable
-                    onDragStart={() => onDragStart(i)}
-                    onDragOver={e => onDragOver(e, i)}
-                    onDragEnd={onDragEnd}
                     style={{
                       background: 'var(--bg-surface)',
                       border: '1px solid var(--border)',
                       borderRadius: 'var(--radius)',
-                      padding: '12px 14px',
-                      display: 'flex',
-                      gap: 10,
-                      alignItems: 'flex-start',
-                      cursor: 'grab',
+                      padding: '14px 16px',
                     }}
                   >
-                    {/* Step number + drag handle */}
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, paddingTop: 2, flexShrink: 0 }}>
-                      <GripVertical width={14} height={14} style={{ color: 'var(--text-muted)', opacity: 0.6 }} />
+                    {/* Step header */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
                       <div style={{
-                        width: 22, height: 22, borderRadius: '50%', display: 'flex', alignItems: 'center',
-                        justifyContent: 'center', fontSize: 10, fontWeight: 700,
-                        background: 'var(--accent)', color: '#fff',
+                        width: 26, height: 26, borderRadius: '50%', display: 'flex', alignItems: 'center',
+                        justifyContent: 'center', fontSize: 11, fontWeight: 700,
+                        background: 'var(--accent)', color: '#fff', flexShrink: 0,
                       }}>
                         {i + 1}
                       </div>
+                      <input
+                        className="form-input"
+                        placeholder="Step ID (e.g., step1)"
+                        style={{ fontSize: 12, flex: 1 }}
+                        value={step.id}
+                        onChange={e => updateStep(i, { id: e.target.value })}
+                      />
+                      <button className="btn-icon" style={{ padding: 4 }} onClick={() => removeStep(i)}>
+                        <X width={13} height={13} />
+                      </button>
                     </div>
 
                     {/* Step fields */}
-                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                       <div style={{ display: 'flex', gap: 8 }}>
-                        <input
-                          className="form-input"
-                          placeholder="Step name"
-                          style={{ fontSize: 13, flex: 1 }}
-                          value={step.stepName}
-                          onChange={e => updateStep(i, { stepName: e.target.value })}
-                        />
-                        <select
-                          className="form-select"
-                          style={{ fontSize: 12, flex: 1 }}
-                          value={step.agentId}
-                          onChange={e => updateStep(i, { agentId: e.target.value })}
-                        >
-                          {agents.map(a => (
-                            <option key={a.id} value={a.id}>{a.name}</option>
-                          ))}
-                        </select>
+                        <div style={{ flex: 1 }}>
+                          <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>
+                            Step Name
+                          </label>
+                          <input
+                            className="form-input"
+                            placeholder="Step name"
+                            style={{ fontSize: 13 }}
+                            value={step.stepName}
+                            onChange={e => updateStep(i, { stepName: e.target.value })}
+                          />
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 }}>
+                            Agent
+                          </label>
+                          <select
+                            className="form-select"
+                            style={{ fontSize: 12 }}
+                            value={step.agentId}
+                            onChange={e => updateStep(i, { agentId: e.target.value })}
+                          >
+                            {agents.map(a => (
+                              <option key={a.id} value={a.id}>{a.name}</option>
+                            ))}
+                          </select>
+                        </div>
                       </div>
-                      <textarea
-                        className="form-textarea"
-                        rows={2}
-                        placeholder="What should this agent do at this step?"
-                        style={{ fontSize: 12 }}
-                        value={step.description}
-                        onChange={e => updateStep(i, { description: e.target.value })}
-                      />
-                    </div>
 
-                    {/* Remove */}
-                    <button className="btn-icon" style={{ padding: 4, marginTop: 2 }} onClick={() => removeStep(i)}>
-                      <X width={13} height={13} />
-                    </button>
+                      {/* Dependencies */}
+                      <div>
+                        <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 6 }}>
+                          Dependencies (select steps this step depends on)
+                        </label>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                          {form.entries
+                            .filter((_, idx) => idx !== i) // Can't depend on self
+                            .map((otherStep, otherIdx) => {
+                              const isSelected = step.dependsOn?.includes(otherStep.id) || false;
+                              return (
+                                <button
+                                  key={otherIdx}
+                                  type="button"
+                                  onClick={() => toggleDependency(i, otherStep.id)}
+                                  style={{
+                                    fontSize: 11, padding: '3px 10px', borderRadius: 12,
+                                    border: `1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'}`,
+                                    background: isSelected ? 'color-mix(in srgb, var(--accent) 15%, transparent)' : 'var(--bg-elevated)',
+                                    color: isSelected ? 'var(--accent-hover)' : 'var(--text-secondary)',
+                                    cursor: 'pointer', transition: 'all 0.15s',
+                                  }}
+                                >
+                                  {otherStep.stepName} ({otherStep.id})
+                                </button>
+                              );
+                            })}
+                          {form.entries.length === 1 && (
+                            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                              Add more steps to create dependencies
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Input template */}
+                      <div>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                          Input Template
+                          <span style={{ fontSize: 10, fontWeight: 400, color: 'var(--text-muted)' }}>
+                            Use {`{{input}}`} for initial input, {`{{stepId}}`} for step outputs (e.g., {`{{step1}}`})
+                          </span>
+                        </div>
+                        <textarea
+                          className="form-textarea"
+                          rows={3}
+                          placeholder="e.g. Analyze the following: {{input}} and combine with results from {{step1}}"
+                          style={{ fontSize: 12 }}
+                          value={step.inputTemplate}
+                          onChange={e => updateStep(i, { inputTemplate: e.target.value })}
+                        />
+                      </div>
+                    </div>
                   </div>
                 ))}
               </div>
-
-              {/* Step flow preview */}
-              {form.entries.length > 1 && (
-                <div style={{
-                  marginTop: 16, padding: '10px 14px',
-                  background: 'var(--bg-surface)', borderRadius: 'var(--radius)',
-                  border: '1px solid var(--border)',
-                  display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap',
-                }}>
-                  {form.entries.map((s, i) => (
-                    <span key={i} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span style={{
-                        fontSize: 11, fontWeight: 600, padding: '2px 8px',
-                        borderRadius: 12, background: 'var(--bg-elevated)',
-                        border: '1px solid var(--border)', color: 'var(--text-secondary)',
-                        maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                      }}>
-                        {agentName(s.agentId)}
-                      </span>
-                      {i < form.entries.length - 1 && (
-                        <ArrowRight width={12} height={12} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-                      )}
-                    </span>
-                  ))}
-                </div>
-              )}
             </div>
 
             {/* ── Dry Run ───────────────────────────────────────────────────── */}

@@ -522,7 +522,7 @@ export default function AgentsPage() {
                     <select
                       id="agent-group-select"
                       className="form-select"
-                      value={groups.includes(form.agent_group) ? form.agent_group : ''}
+                      value={groups.includes(form.agent_group || '') ? form.agent_group : ''}
                       onChange={e => setForm(f => ({ ...f, agent_group: e.target.value }))}
                       style={{ flex: 1 }}
                     >
@@ -536,7 +536,7 @@ export default function AgentsPage() {
                       id="agent-group-custom"
                       className="form-input"
                       placeholder="Or type new group…"
-                      value={!groups.includes(form.agent_group) ? form.agent_group : ''}
+                      value={!groups.includes(form.agent_group || '') ? (form.agent_group || '') : ''}
                       onChange={e => setForm(f => ({ ...f, agent_group: e.target.value }))}
                       style={{ flex: 1 }}
                     />

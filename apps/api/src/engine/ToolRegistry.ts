@@ -596,6 +596,12 @@ export class ToolRegistry {
   /**
    * Execute a tool by name.
    * Config is always loaded from the DB so user edits take effect immediately.
+   * 
+   * STRICT ENFORCEMENT:
+   * - Tool MUST exist in DB
+   * - Tool MUST be enabled
+   * - Tool MUST have an executor (built-in) OR endpoint (HTTP)
+   * - NO silent continues, NO soft errors
    */
   static async execute(
     toolName: string,
@@ -611,7 +617,7 @@ export class ToolRegistry {
     
     console.log(`[ToolRegistry] START ${dryRunPrefix}"${toolName}" | args: ${argsPreview}`);
 
-    // Load tool row from DB
+    // ── 1. Load tool from DB (REQUIRED) ───────────────────────────────────────
     const { rows } = await db.query(
       `SELECT name, config, is_enabled, risk_level FROM tools WHERE name = $1 LIMIT 1`,
       [toolName]
@@ -620,25 +626,19 @@ export class ToolRegistry {
     if (rows.length === 0) {
       const duration = Date.now() - startTime;
       console.log(`[ToolRegistry] END ${dryRunPrefix}"${toolName}" (${duration}ms, failed: not registered)`);
-      return {
-        error: 'terminal',
-        tool: toolName,
-        message: `Tool "${toolName}" is not registered. Add it via the Tools page.`,
-      };
+      throw new Error(`Tool "${toolName}" is not registered. Add it via the Tools page.`);
     }
 
     const row = rows[0];
+
+    // ── 2. Check if enabled (REQUIRED) ────────────────────────────────────────
     if (!row.is_enabled) {
       const duration = Date.now() - startTime;
       console.log(`[ToolRegistry] END ${dryRunPrefix}"${toolName}" (${duration}ms, failed: disabled)`);
-      return {
-        error: 'terminal',
-        tool: toolName,
-        message: `Tool "${toolName}" is disabled. Enable it on the Tools page.`,
-      };
+      throw new Error(`Tool "${toolName}" is disabled. Enable it on the Tools page.`);
     }
 
-    // Check risk level for dry runs
+    // ── 3. Check risk level for dry runs ──────────────────────────────────────
     if (isDryRun && row.risk_level === 'high') {
       const duration = Date.now() - startTime;
       console.log(`[ToolRegistry] END ${dryRunPrefix}"${toolName}" (${duration}ms, blocked: high-risk in dry-run)`);
@@ -657,73 +657,71 @@ export class ToolRegistry {
     let errorType: string | undefined;
 
     try {
-      // ── 1. Known built-in executor ────────────────────────────────────────────
+      // ── 4. Resolve executor (STRICT) ────────────────────────────────────────
       const executor = EXECUTOR_MAP.get(toolName);
+      
       if (executor) {
+        // Built-in tool with executor
         result = await executor(args, config, signal);
         success = !result.error;
         errorType = result.error as string | undefined;
-      }
-      // ── 2. HTTP endpoint tool ─────────────────────────────────────────────────
-      else {
+      } else {
+        // Check for HTTP endpoint
         const endpoint = (config.endpoint ?? config.url ?? config.base_url) as string | undefined;
-        if (endpoint) {
-          const method  = (config.method as string) ?? 'POST';
-          const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-          if (config.auth_token) headers['Authorization'] = `Bearer ${config.auth_token}`;
-          const timeout = (config.timeout_ms as number) ?? 10000;
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), timeout);
-          try {
-            const res  = await fetch(endpoint, {
-              method, headers,
-              body: method !== 'GET' ? JSON.stringify(args) : undefined,
-              signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
-            });
-            const text = await res.text();
-            let parsed: unknown;
-            try { parsed = JSON.parse(text); } catch { parsed = { raw: text }; }
-            result = {
-              status: res.status, ok: res.ok, body: parsed as Result,
-              ...(res.ok ? {} : { error: 'recoverable', message: `Endpoint returned HTTP ${res.status}. Check endpoint and auth_token in tool config.` }),
-            };
-            success = res.ok;
-            errorType = res.ok ? undefined : 'recoverable';
-          } catch (e: any) {
-            if (e.name === 'AbortError') {
-              result = { error: 'recoverable', tool: toolName, message: `HTTP tool timed out after ${timeout}ms.` };
-            } else {
-              result = { error: 'recoverable', tool: toolName, message: `HTTP request failed: ${e.message}` };
-            }
-            success = false;
-            errorType = 'recoverable';
-          } finally {
-            clearTimeout(timer);
-          }
+        
+        if (!endpoint) {
+          // NO EXECUTOR AND NO ENDPOINT = TERMINAL ERROR
+          throw new Error(
+            `Tool "${toolName}" has no executor. ` +
+            `Add an "endpoint" key to its config for HTTP tools, ` +
+            `or use a built-in tool name.`
+          );
         }
-        // ── 3. No handler ─────────────────────────────────────────────────────────
-        else {
+
+        // HTTP endpoint tool
+        const method  = (config.method as string) ?? 'POST';
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (config.auth_token) headers['Authorization'] = `Bearer ${config.auth_token}`;
+        const timeout = (config.timeout_ms as number) ?? 10000;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeout);
+        
+        try {
+          const res  = await fetch(endpoint, {
+            method, headers,
+            body: method !== 'GET' ? JSON.stringify(args) : undefined,
+            signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
+          });
+          const text = await res.text();
+          let parsed: unknown;
+          try { parsed = JSON.parse(text); } catch { parsed = { raw: text }; }
           result = {
-            error: 'terminal',
-            tool: toolName,
-            message:
-              `Tool "${toolName}" has no executor. ` +
-              `Add an "endpoint" key to its config for HTTP tools, ` +
-              `or use a built-in name (web_search, calculator, http_request, read_file, write_file, run_command, get_datetime).`,
+            status: res.status, ok: res.ok, body: parsed as Result,
+            ...(res.ok ? {} : { error: 'recoverable', message: `Endpoint returned HTTP ${res.status}. Check endpoint and auth_token in tool config.` }),
           };
+          success = res.ok;
+          errorType = res.ok ? undefined : 'recoverable';
+        } catch (e: any) {
+          if (e.name === 'AbortError') {
+            result = { error: 'recoverable', tool: toolName, message: `HTTP tool timed out after ${timeout}ms.` };
+          } else {
+            result = { error: 'recoverable', tool: toolName, message: `HTTP request failed: ${e.message}` };
+          }
           success = false;
-          errorType = 'terminal';
+          errorType = 'recoverable';
+        } finally {
+          clearTimeout(timer);
         }
       }
     } catch (e: any) {
-      console.error(`[ToolRegistry] Built-in "${toolName}" threw:`, e);
+      console.error(`[ToolRegistry] Tool "${toolName}" execution error:`, e);
       result = {
-        error: 'recoverable',
+        error: 'terminal',
         tool: toolName,
-        message: `Tool execution failed: ${e.message}. This may be transient — retry or check config.`,
+        message: `Tool execution failed: ${e.message}`,
       };
       success = false;
-      errorType = 'recoverable';
+      errorType = 'terminal';
     }
 
     // Calculate output size

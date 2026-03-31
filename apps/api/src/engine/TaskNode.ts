@@ -1,229 +1,363 @@
 /**
- * TaskNode — Agentic Task Manager
- * ─────────────────────────────────────────────────────────────────────────────
- * Executes a task by acting as a high-level "Manager" AI that coordinates
- * other agents.
- *
- * Current implementation uses a manager-agent loop that can delegate
- * to individual agent nodes based on the workflow definition.
+ * TaskNode — DAG-Based Workflow Executor
  */
 
 import db from '../db/client.js';
-import { AgentNode } from './AgentNode.js';
-import { LLMProviderFactory, type ChatMessage } from './LLMProviderFactory.js';
-import { ExecutionContext, ExecutionResult, IExecutableNode, ToolDefinition } from '../types.js';
+import { executeAgent } from './agent/executeAgent.js';
+import { ExecutionContext, ExecutionResult, IExecutableNode, WorkflowStep } from '../types.js';
+import { logger } from '../utils/logger.js';
 import { v4 as uuidv4 } from 'uuid';
 
-const MAX_TURNS = 20;
+const MAX_PARALLEL = 3;
 
 export class TaskNode implements IExecutableNode {
     async execute(ctx: ExecutionContext): Promise<ExecutionResult> {
+        const startTime = Date.now();
         const { taskId, initialPrompt } = ctx.inputData as {
             taskId: string;
             initialPrompt?: string;
         };
 
         if (ctx.currentDepth >= ctx.maxDepth) {
-            return { success: false, output: { text: '' }, error: 'Max task depth exceeded' };
+            return { success: false, output: {}, error: 'Max task depth exceeded' };
         }
 
-        // ── 1. Load Task + Steps ─────────────────────────────────────────────
-        const taskRes = await db.query(`SELECT * FROM tasks WHERE id = $1`, [taskId]);
+        const taskRes = await db.query('SELECT * FROM tasks WHERE id = $1', [taskId]);
         if (taskRes.rows.length === 0) {
-            return { success: false, output: { text: '' }, error: `Task not found: ${taskId}` };
+            return { success: false, output: {}, error: 'Task not found: ' + taskId };
         }
         const task = taskRes.rows[0];
 
-        const workflowRes = await db.query(`SELECT * FROM schedule_tasks WHERE schedule_id = $1 ORDER BY order_index`, [taskId]);
-        // Note: For standalone tasks, it might just use the workflow_definition blob.
         const rawWorkflow = task.workflow_definition;
-        const workflowPlan = Array.isArray(rawWorkflow) ? rawWorkflow : JSON.parse(rawWorkflow ?? '[]');
+        const workflowDefinition: WorkflowStep[] = Array.isArray(rawWorkflow) 
+            ? rawWorkflow 
+            : JSON.parse(rawWorkflow || '[]');
 
-        // ── 2. Create/Sync Task Run ──────────────────────────────────────────
+        const validationErrors = this.validateWorkflow(workflowDefinition);
+        if (validationErrors.length > 0) {
+            const errorMsg = 'Invalid workflow definition: ' + validationErrors.join('; ');
+            console.error('[TaskNode] Validation failed:', validationErrors);
+            return { success: false, output: {}, error: errorMsg };
+        }
+
         const isDryRun = ctx.inputData.dry_run === true;
-        const taskRunId = (ctx.inputData.runId as string | undefined) ?? uuidv4();
+        const taskRunId = (ctx.inputData.runId as string | undefined) || uuidv4();
 
         if (!isDryRun) {
             await db.query(
-                `INSERT INTO execution_runs (id, node_type, node_id, parent_run_id, status, input_data, started_at)
-                 VALUES ($1, 'task', $2, $3, 'running', $4, NOW())
-                 ON CONFLICT (id) DO UPDATE SET 
-                    status = 'running',
-                    started_at = COALESCE(execution_runs.started_at, EXCLUDED.started_at),
-                    input_data = $4`,
-                [taskRunId, taskId, ctx.parentRunId ?? null, JSON.stringify({ taskId, initialPrompt })]
+                'INSERT INTO execution_runs (id, node_type, node_id, parent_run_id, status, input_data, started_at) VALUES ($1, $2, $3, $4, $5, $6, NOW()) ON CONFLICT (id) DO UPDATE SET status = $5, started_at = COALESCE(execution_runs.started_at, EXCLUDED.started_at), input_data = $6',
+                [taskRunId, 'task', taskId, ctx.parentRunId || null, 'running', JSON.stringify({ taskId, initialPrompt })]
             );
         }
 
-        // ── 3. Resolve Manager LLM ───────────────────────────────────────────
-        let providerOverride: Parameters<typeof LLMProviderFactory.create>[0] = {};
+        logger.taskStart(task.name, taskId, taskRunId, ctx.parentRunId);
+        console.log('[TaskNode] Starting DAG execution: ' + task.name + ' (' + taskRunId + ')');
+        console.log('[TaskNode] Workflow has ' + workflowDefinition.length + ' steps');
 
-        if (task.llm_provider_id) {
-            const settingsRes = await db.query(`SELECT * FROM llm_settings WHERE id = $1`, [task.llm_provider_id]);
-            if (settingsRes.rows.length > 0) {
-                const s = settingsRes.rows[0];
-                providerOverride = { provider: s.provider, apiKey: s.api_key, model: s.model_name, baseUrl: s.base_url ?? undefined };
-            }
-        } else {
-            const defaultRes = await db.query(`SELECT * FROM llm_settings WHERE is_default = true LIMIT 1`);
-            if (defaultRes.rows.length > 0) {
-                const s = defaultRes.rows[0];
-                providerOverride = { provider: s.provider, apiKey: s.api_key, model: s.model_name, baseUrl: s.base_url ?? undefined };
-            }
-        }
 
-        const llm = LLMProviderFactory.create(providerOverride);
-
-        // ── 4. Virtual "Agents" as Tools ─────────────────────────────────────
-        // The manager can "call" an agent as if it were a tool.
-        const agentsRes = await db.query(`SELECT id, name, skill FROM agents`);
-        const allAgents = agentsRes.rows;
-
-        const agentTools: ToolDefinition[] & { _agentId?: string }[] = allAgents.map(a => ({
-            name: `delegate_to_${a.name.toLowerCase().replace(/\s+/g, '_')}`,
-            description: `Delegate a sub-task to the ${a.name} agent. Skill: ${a.skill}. Use this for ${a.name} related tasks.`,
-            inputSchema: {
-                type: 'object',
-                properties: { instructions: { type: 'string', description: 'Specific instructions for this agent.' } },
-                required: ['instructions']
-            },
-            _agentId: a.id
-        }));
-
-        // ── 5. Manager Loop ──────────────────────────────────────────────────
-        const workflowJson = JSON.stringify(workflowPlan, null, 2);
-        const systemPrompt = `You are a high-level Task Manager AI. 
-The user has a task: "${task.name}".
-Description: ${task.description}
-
-You have a proposed workflow plan:
-${workflowJson}
-
-You have access to several specialized agents. Your goal is to achieve the task by delegating to these agents in a logical sequence.
-When you delegate, the agent will perform its own autonomous loop and return the result to you.
-Synthesis the information you receive and decide if the task is complete or if further steps are needed.
-
-CRITICAL: 
-1. Use the "delegate_to_..." tools to start sub-tasks.
-2. When you have achieved the goal, provide a final "REPORT" to the user and end your turn.
-3. If an agent fails, you can try another agent or ask for clarification.`;
-
-        const messages: ChatMessage[] = [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: initialPrompt || "Execute the task based on the workflow plan." },
-        ];
-
-        let finalOutput = '';
-        const allToolsUsed: string[] = [];
+        const initialInput = initialPrompt || task.description || '';
+        const completed = new Map<string, string>();
         const totalTokens = { inputTokens: 0, outputTokens: 0 };
-        let turn = 0;
+        const allToolsUsed: string[] = [];
+        const stepOutputs: Array<{
+            stepId: string;
+            stepName: string;
+            agentId: string;
+            output: string;
+            runId: string;
+        }> = [];
 
         try {
-            while (turn < MAX_TURNS) {
-                turn++;
-                
-                // Check for abort before each turn
-                if (ctx.abortSignal?.aborted) {
-                    throw new Error('Task execution aborted');
+            const stepMap = new Map<string, WorkflowStep>();
+            workflowDefinition.forEach(step => stepMap.set(step.id, step));
+
+            const dependedOn = new Set<string>();
+            workflowDefinition.forEach(step => {
+                step.dependsOn.forEach(depId => dependedOn.add(depId));
+            });
+            const terminalSteps = workflowDefinition
+                .filter(step => !dependedOn.has(step.id))
+                .map(step => step.id);
+
+            console.log('[TaskNode] Terminal steps: ' + terminalSteps.join(', '));
+
+            while (completed.size < workflowDefinition.length) {
+                if (ctx.abortSignal && ctx.abortSignal.aborted) {
+                    throw new Error('Task execution aborted by user');
                 }
 
-                const response = await llm.chat(messages, agentTools, { maxTokens: 4096 });
-                if (response.inputTokens) {
-                    totalTokens.inputTokens += response.inputTokens;
-                    totalTokens.outputTokens += response.outputTokens;
+                const runnable = workflowDefinition.filter(step => 
+                    !completed.has(step.id) && 
+                    step.dependsOn.every(depId => completed.has(depId))
+                );
+
+                if (runnable.length === 0) {
+                    const remaining = workflowDefinition.filter(step => !completed.has(step.id));
+                    throw new Error(
+                        'Workflow stuck: ' + remaining.length + ' steps remaining but none are runnable. Check for circular dependencies or missing step IDs.'
+                    );
                 }
 
-                if (response.content) {
-                    finalOutput += (finalOutput ? '\n\n' : '') + response.content;
-                }
+                console.log('[TaskNode] Runnable steps: ' + runnable.map(s => s.stepName).join(', '));
 
-                if (response.stopReason === 'end_turn' || response.toolCalls.length === 0) {
-                    break;
-                }
+                const batch = runnable.slice(0, MAX_PARALLEL);
+                const results = await Promise.all(
+                    batch.map(step => this.executeStep(
+                        step, initialInput, completed, taskRunId, isDryRun, ctx.abortSignal
+                    ))
+                );
 
-                messages.push({ role: 'assistant', content: response.content } as ChatMessage);
+                for (let i = 0; i < batch.length; i++) {
+                    const step = batch[i];
+                    const result = results[i];
 
-                // Execute delegations
-                for (const tc of response.toolCalls) {
-                    // Check for abort before each tool call
-                    if (ctx.abortSignal?.aborted) {
-                        throw new Error('Task execution aborted');
-                    }
-                    
-                    const toolDef = agentTools.find(t => t.name === tc.name) as (ToolDefinition & { _agentId?: string }) | undefined;
-                    if (!toolDef || !toolDef._agentId) {
-                        messages.push({ role: 'user', content: `Error: Tool "${tc.name}" not found.` });
-                        continue;
-                    }
+                    if (!result.success) {
+                        if (!isDryRun) {
+                            await db.query(
+                                'UPDATE execution_runs SET status = $1, ended_at = NOW(), output_data = $2, error_message = $3 WHERE id = $4',
+                                ['failed', JSON.stringify({ steps: stepOutputs, failedAt: step.stepName }), 'Step "' + step.stepName + '" failed: ' + result.error, taskRunId]
+                            );
+                        }
 
-                    const instructions = (tc.arguments as any).instructions || '';
-                    console.log(`[TaskNode] Delegating to agent ${toolDef._agentId}: ${instructions.slice(0, 50)}...`);
-
-                    const agentRunId = uuidv4();
-                    if (!isDryRun) {
-                        await db.query(
-                            `INSERT INTO execution_runs (id, node_type, node_id, parent_run_id, status, input_data, started_at)
-                             VALUES ($1, 'agent', $2, $3, 'running', $4, NOW())`,
-                            [agentRunId, toolDef._agentId, taskRunId, JSON.stringify({ prompt: instructions })]
-                        );
+                        return {
+                            success: false,
+                            output: { steps: stepOutputs, failedAt: step.stepName },
+                            error: 'Step "' + step.stepName + '" failed: ' + result.error,
+                            tokenUsage: totalTokens,
+                            toolsUsed: [...new Set(allToolsUsed)],
+                        };
                     }
 
-                    const agentCtx: ExecutionContext = {
-                        inputData: { 
-                            agentId: toolDef._agentId, 
-                            runId: isDryRun ? undefined : agentRunId, 
-                            prompt: instructions,
-                            dry_run: isDryRun 
-                        },
-                        currentDepth: ctx.currentDepth + 1,
-                        totalSteps: 1,
-                        maxDepth: ctx.maxDepth,
-                        parentRunId: taskRunId,
-                        abortSignal: ctx.abortSignal,
-                    };
-
-                    const agentNode = new AgentNode();
-                    const subResult = await agentNode.execute(agentCtx);
-                    
-                    if (subResult.tokenUsage) {
-                        totalTokens.inputTokens += subResult.tokenUsage.inputTokens;
-                        totalTokens.outputTokens += subResult.tokenUsage.outputTokens;
-                    }
-                    if (subResult.toolsUsed) allToolsUsed.push(...subResult.toolsUsed);
-
-                    messages.push({
-                        role: 'user',
-                        content: `Agent "${tc.name}" result:\n${subResult.output?.text || (subResult.success ? 'Success (no output)' : 'Failed: ' + subResult.error)}`
+                    completed.set(step.id, result.output);
+                    stepOutputs.push({
+                        stepId: step.id,
+                        stepName: step.stepName,
+                        agentId: step.agentId,
+                        output: result.output,
+                        runId: result.runId,
                     });
+
+                    if (result.tokenUsage) {
+                        totalTokens.inputTokens += result.tokenUsage.inputTokens;
+                        totalTokens.outputTokens += result.tokenUsage.outputTokens;
+                    }
+                    if (result.toolsUsed) {
+                        allToolsUsed.push(...result.toolsUsed);
+                    }
                 }
             }
 
-            const outputPayload = {
-                text: finalOutput,
-                steps: allToolsUsed.length,
-                summary: finalOutput.substring(0, 1000)
-            };
+            const finalOutput: Record<string, string> = {};
+            terminalSteps.forEach(stepId => {
+                const output = completed.get(stepId);
+                if (output) {
+                    finalOutput[stepId] = output;
+                }
+            });
 
-            if (!isDryRun && !ctx.abortSignal?.aborted) {
-                await db.query(`UPDATE execution_runs SET status = 'completed', ended_at = NOW(), output_data = $1 WHERE id = $2`, [JSON.stringify(outputPayload), taskRunId]);
+            const outputPayload = { steps: stepOutputs, finalOutput };
+
+            if (!isDryRun && (!ctx.abortSignal || !ctx.abortSignal.aborted)) {
+                await db.query(
+                    'UPDATE execution_runs SET status = $1, ended_at = NOW(), output_data = $2 WHERE id = $3',
+                    ['completed', JSON.stringify(outputPayload), taskRunId]
+                );
             }
 
-            return { success: true, output: outputPayload, tokenUsage: totalTokens, toolsUsed: [...new Set(allToolsUsed)] };
+            console.log('[TaskNode] Task completed successfully. Total tokens: ' + (totalTokens.inputTokens + totalTokens.outputTokens));
+            logger.taskEnd(task.name, taskId, taskRunId, true, Date.now() - startTime);
+
+            return {
+                success: true,
+                output: outputPayload,
+                tokenUsage: totalTokens,
+                toolsUsed: [...new Set(allToolsUsed)],
+            };
 
         } catch (err: any) {
             console.error('[TaskNode] Error:', err);
             
-            const isAborted = ctx.abortSignal?.aborted || err.message?.includes('aborted');
+            const isAborted = (ctx.abortSignal && ctx.abortSignal.aborted) || (err.message && err.message.includes('aborted'));
             const errorMessage = isAborted ? 'Killed by user' : err.message;
             
             if (!isDryRun) {
                 await db.query(
-                    `UPDATE execution_runs SET status = 'failed', ended_at = NOW(), error_message = $1 WHERE id = $2`, 
-                    [errorMessage, taskRunId]
+                    'UPDATE execution_runs SET status = $1, ended_at = NOW(), output_data = $2, error_message = $3 WHERE id = $4',
+                    ['failed', JSON.stringify({ steps: stepOutputs }), errorMessage, taskRunId]
                 );
             }
+
+            logger.taskEnd(task.name, taskId, taskRunId, false, Date.now() - startTime, errorMessage);
             
-            return { success: false, output: { text: finalOutput || '' }, error: errorMessage };
+            return {
+                success: false,
+                output: { steps: stepOutputs },
+                error: errorMessage,
+                tokenUsage: totalTokens,
+                toolsUsed: [...new Set(allToolsUsed)],
+            };
         }
+    }
+
+
+    private async executeStep(
+        step: WorkflowStep,
+        initialInput: string,
+        completed: Map<string, string>,
+        taskRunId: string,
+        isDryRun: boolean,
+        abortSignal?: AbortSignal
+    ): Promise<{
+        success: boolean;
+        output: string;
+        runId: string;
+        error?: string;
+        tokenUsage?: { inputTokens: number; outputTokens: number };
+        toolsUsed?: string[];
+    }> {
+        console.log('[TaskNode] Executing step: ' + step.stepName + ' (' + step.id + ')');
+
+        let resolvedPrompt = step.inputTemplate.replace(/\{\{input\}\}/g, initialInput);
+
+        for (const [stepId, output] of completed.entries()) {
+            const placeholder = new RegExp('\\{\\{' + stepId + '\\}\\}', 'g');
+            resolvedPrompt = resolvedPrompt.replace(placeholder, output);
+        }
+
+        console.log('[TaskNode] Resolved prompt (first 100 chars): ' + resolvedPrompt.slice(0, 100) + '...');
+
+        const agentRunId = uuidv4();
+
+        const result = await executeAgent({
+            agentId: step.agentId,
+            prompt: resolvedPrompt,
+            runId: agentRunId,
+            parentRunId: taskRunId,
+            isDryRun,
+            abortSignal,
+        });
+
+        if (!result.success) {
+            console.error('[TaskNode] Step ' + step.stepName + ' failed:', result.error);
+            return {
+                success: false,
+                output: '',
+                runId: agentRunId,
+                error: typeof result.error === 'string' ? result.error : 'Unknown error',
+            };
+        }
+
+        console.log('[TaskNode] Step ' + step.stepName + ' completed. Output length: ' + result.output.text.length + ' chars');
+
+        return {
+            success: true,
+            output: result.output.text,
+            runId: agentRunId,
+            tokenUsage: result.tokenUsage,
+            toolsUsed: result.toolsUsed,
+        };
+    }
+
+    private validateWorkflow(workflow: WorkflowStep[]): string[] {
+        const errors: string[] = [];
+
+        if (!Array.isArray(workflow)) {
+            errors.push('workflow_definition must be an array');
+            return errors;
+        }
+
+        if (workflow.length === 0) {
+            errors.push('workflow_definition cannot be empty');
+            return errors;
+        }
+
+        const stepIds = new Set<string>();
+        const duplicates = new Set<string>();
+
+        workflow.forEach((step, index) => {
+            if (!step.id || typeof step.id !== 'string' || step.id.trim() === '') {
+                errors.push('Step ' + (index + 1) + ': missing or invalid id');
+            } else {
+                if (stepIds.has(step.id)) {
+                    duplicates.add(step.id);
+                }
+                stepIds.add(step.id);
+            }
+
+            if (!step.agentId || typeof step.agentId !== 'string') {
+                errors.push('Step ' + (index + 1) + ' (' + (step.id || 'unnamed') + '): missing or invalid agentId');
+            }
+
+            if (!step.stepName || typeof step.stepName !== 'string' || step.stepName.trim() === '') {
+                errors.push('Step ' + (index + 1) + ' (' + (step.id || 'unnamed') + '): missing or invalid stepName');
+            }
+
+            if (!step.inputTemplate || typeof step.inputTemplate !== 'string' || step.inputTemplate.trim() === '') {
+                errors.push('Step ' + (index + 1) + ' (' + (step.stepName || 'unnamed') + '): missing or empty inputTemplate');
+            }
+
+            if (!Array.isArray(step.dependsOn)) {
+                errors.push('Step ' + (index + 1) + ' (' + (step.stepName || 'unnamed') + '): dependsOn must be an array');
+            }
+        });
+
+        if (duplicates.size > 0) {
+            errors.push('Duplicate step IDs found: ' + Array.from(duplicates).join(', '));
+        }
+
+        workflow.forEach((step, index) => {
+            if (Array.isArray(step.dependsOn)) {
+                step.dependsOn.forEach(depId => {
+                    if (!stepIds.has(depId)) {
+                        errors.push('Step ' + (index + 1) + ' (' + (step.stepName || 'unnamed') + '): depends on non-existent step "' + depId + '"');
+                    }
+                    if (depId === step.id) {
+                        errors.push('Step ' + (index + 1) + ' (' + (step.stepName || 'unnamed') + '): cannot depend on itself');
+                    }
+                });
+            }
+        });
+
+        const hasCycle = this.detectCycles(workflow);
+        if (hasCycle) {
+            errors.push('Circular dependency detected in workflow');
+        }
+
+        return errors;
+    }
+
+    private detectCycles(workflow: WorkflowStep[]): boolean {
+        const stepMap = new Map<string, WorkflowStep>();
+        workflow.forEach(step => stepMap.set(step.id, step));
+
+        const visited = new Set<string>();
+        const recStack = new Set<string>();
+
+        const dfs = (stepId: string): boolean => {
+            visited.add(stepId);
+            recStack.add(stepId);
+
+            const step = stepMap.get(stepId);
+            if (step) {
+                for (const depId of step.dependsOn) {
+                    if (!visited.has(depId)) {
+                        if (dfs(depId)) return true;
+                    } else if (recStack.has(depId)) {
+                        return true;
+                    }
+                }
+            }
+
+            recStack.delete(stepId);
+            return false;
+        };
+
+        for (const step of workflow) {
+            if (!visited.has(step.id)) {
+                if (dfs(step.id)) return true;
+            }
+        }
+
+        return false;
     }
 }

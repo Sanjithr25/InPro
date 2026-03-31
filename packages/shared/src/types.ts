@@ -1,5 +1,13 @@
 // ─── Execution Engine Types ──────────────────────────────────────────────────
 
+export interface WorkflowStep {
+  id: string;                    // REQUIRED: unique step identifier
+  agentId: string;
+  stepName: string;
+  inputTemplate: string;         // REQUIRED: fully executable prompt with {{input}} and {{stepId}} placeholders
+  dependsOn: string[];           // Array of step IDs this step depends on (empty = root step)
+}
+
 export interface ExecutionContext {
   /** The data payload passed into this node */
   inputData: Record<string, unknown>;
@@ -11,20 +19,34 @@ export interface ExecutionContext {
   maxDepth: number;
   /** The DB run ID of the parent execution_run row (null for root) */
   parentRunId: string | null;
+  /** Optional abort signal for cancellation */
+  abortSignal?: AbortSignal;
 }
 
-export interface ExecutionResult {
-  success: boolean;
-  /** Parsed final output from the LLM or downstream node */
+export type ExecutionSuccess = {
+  success: true;
   output: Record<string, unknown>;
-  error?: string;
   tokenUsage?: {
     inputTokens: number;
     outputTokens: number;
   };
   toolsUsed?: string[];
   latencyMs?: number;
-}
+};
+
+export type ExecutionFailure = {
+  success: false;
+  output?: Record<string, unknown>;
+  error: string;
+  tokenUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+  };
+  toolsUsed?: string[];
+  latencyMs?: number;
+};
+
+export type ExecutionResult = ExecutionSuccess | ExecutionFailure;
 
 /** Every runnable node in the execution graph implements this */
 export interface IExecutableNode {
@@ -98,8 +120,8 @@ export interface Task {
   id: string;
   name: string;
   description: string;
-  /** DAG / ordered list of AgentNode refs */
-  workflow_definition: Record<string, unknown>;
+  /** Ordered list of workflow steps - each step calls an agent with a predefined instruction */
+  workflow_definition: WorkflowStep[];
   created_at: string;
   updated_at: string;
 }
