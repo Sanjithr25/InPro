@@ -16,7 +16,8 @@ const handle = (fn: (req: Request, res: Response) => Promise<void>) =>
 // ─── GET /api/agents ──────────────────────────────────────────────────────────
 router.get('/', handle(async (_req, res) => {
   const { rows } = await pool.query(
-    `SELECT a.id, a.name, a.skill, a.agent_group, a.created_at,
+    `SELECT a.id, a.name, a.skill, a.agent_group, a.max_turns, a.timeout_ms, 
+            a.temperature, a.created_at, a.updated_at,
             l.provider AS llm_provider, l.model_name AS provider_model
      FROM agents a
      LEFT JOIN llm_settings l ON a.llm_provider_id = l.id
@@ -40,10 +41,17 @@ router.get('/groups/list', handle(async (_req, res) => {
 // ─── GET /api/agents/:id ──────────────────────────────────────────────────────
 router.get('/:id', handle(async (req, res) => {
   const { rows } = await pool.query(
-    `SELECT a.id, a.name, a.skill, a.agent_group, a.created_at,
+    `SELECT a.id, a.name, a.skill, a.agent_group, a.max_turns, a.timeout_ms,
+            a.temperature, a.created_at, a.updated_at,
             l.provider AS llm_provider, l.id AS llm_provider_id,
             COALESCE(
-              JSON_AGG(JSON_BUILD_OBJECT('id', t.id, 'name', t.name, 'description', t.description))
+              JSON_AGG(JSON_BUILD_OBJECT(
+                'id', t.id, 
+                'name', t.name, 
+                'description', t.description,
+                'risk_level', t.risk_level,
+                'schema', t.schema
+              ))
               FILTER (WHERE t.id IS NOT NULL), '[]'
             ) AS tools
      FROM agents a
@@ -148,19 +156,22 @@ const CreateAgentSchema = z.object({
   llm_provider_id: z.string().uuid().optional(),
   agent_group: z.string().default(''),
   tool_ids: z.array(z.string().uuid()).default([]),
+  max_turns: z.number().int().positive().optional(),
+  timeout_ms: z.number().int().nonnegative().optional(),
+  temperature: z.number().min(0).max(2).optional(),
 });
 
 router.post('/', handle(async (req, res) => {
   const parsed = CreateAgentSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.flatten() }); return; }
 
-  const { name, skill, llm_provider_id, agent_group, tool_ids } = parsed.data;
+  const { name, skill, llm_provider_id, agent_group, tool_ids, max_turns, timeout_ms, temperature } = parsed.data;
   const id = uuidv4();
 
   await pool.query(
-    `INSERT INTO agents (id, name, skill, llm_provider_id, agent_group)
-     VALUES ($1, $2, $3, $4, $5)`,
-    [id, name, skill, llm_provider_id ?? null, agent_group]
+    `INSERT INTO agents (id, name, skill, llm_provider_id, agent_group, max_turns, timeout_ms, temperature)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [id, name, skill, llm_provider_id ?? null, agent_group, max_turns ?? null, timeout_ms ?? null, temperature ?? null]
   );
 
   if (tool_ids.length > 0) {
@@ -215,11 +226,146 @@ router.delete('/:id', handle(async (req, res) => {
   res.json({ data: { deleted: true } });
 }));
 
-// ─── POST /api/agents/:id/run ─────────────────────────────────────────────────
+// ─── POST /api/agents/:id/dry-run ────────────────────────────────────────────
+import { SystemConfig } from '../config/system.js';
+
 const DryRunSchema = z.object({ prompt: z.string().min(1) });
 
-router.post('/:id/run', handle(async (req, res) => {
+router.post('/:id/dry-run', handle(async (req, res) => {
   const parsed = DryRunSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.flatten() }); return; }
+
+  const agentId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+
+  // Step 1: Enforce single active dry run globally
+  const { rows: activeRows } = await pool.query(`
+    SELECT COUNT(*) as count 
+    FROM execution_runs 
+    WHERE is_dry_run = true AND status = 'running'
+  `);
+  
+  if (parseInt(activeRows[0].count, 10) > 0) {
+    res.status(409).json({ 
+      error: 'Another dry run is currently in progress. Please wait for it to complete.' 
+    });
+    return;
+  }
+
+  // Step 2: Create execution record
+  const runId = uuidv4();
+  await pool.query(`
+    INSERT INTO execution_runs 
+      (id, node_type, node_id, is_dry_run, trigger_type, status, input_data, started_at)
+    VALUES ($1, 'agent', $2, true, 'dry_run', 'running', $3, NOW())
+  `, [runId, agentId, JSON.stringify({ prompt: parsed.data.prompt, agentId })]);
+
+  // Step 3: Execute via AgentNode
+  const context: ExecutionContext = {
+    inputData: { prompt: parsed.data.prompt, agentId, runId },
+    currentDepth: 0,
+    totalSteps: 1,
+    maxDepth: 5,
+    parentRunId: null,
+    isDryRun: true,
+  };
+
+  const agentNode = new AgentNode();
+  
+  // Execute in background
+  agentNode.execute(context).then(async (result) => {
+    console.log(`[DryRun] Execution completed for runId: ${runId}, agentId: ${agentId}`);
+    console.log(`[DryRun] Result:`, JSON.stringify(result, null, 2));
+    
+    // Step 4: Retention policy - keep only last N dry runs per agent (safer OFFSET approach)
+    const retentionCount = SystemConfig.get<number>('dryRun.retentionCount', 3);
+    
+    const deleteResult = await pool.query(`
+      DELETE FROM execution_runs
+      WHERE id IN (
+        SELECT id FROM execution_runs
+        WHERE node_type = 'agent'
+          AND node_id = $1
+          AND is_dry_run = true
+        ORDER BY started_at DESC
+        OFFSET $2
+      )
+      RETURNING id
+    `, [agentId, retentionCount]);
+    
+    if (deleteResult.rowCount && deleteResult.rowCount > 0) {
+      console.log(`[DryRun] Retention policy: deleted ${deleteResult.rowCount} old dry runs for agent ${agentId} (keeping last ${retentionCount})`);
+    }
+  }).catch(async (err) => {
+    console.error('[DryRun] Execution failed:', err);
+    // Ensure the run is marked as failed
+    await pool.query(`
+      UPDATE execution_runs
+      SET status = 'failed', ended_at = NOW(), error_message = $1
+      WHERE id = $2 AND status = 'running'
+    `, [err.message || 'Unknown error', runId]);
+  });
+
+  // Return immediately with runId
+  res.json({ data: { runId, status: 'started' } });
+}));
+
+// ─── GET /api/agents/:id/dry-runs ─────────────────────────────────────────────
+router.get('/:id/dry-runs', handle(async (req, res) => {
+  const agentId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  
+  const { rows } = await pool.query(`
+    SELECT 
+      id, status, input_data, output_data, error_message,
+      started_at, ended_at,
+      EXTRACT(EPOCH FROM (COALESCE(ended_at, NOW()) - started_at))::int AS duration_seconds
+    FROM execution_runs
+    WHERE node_type = 'agent'
+      AND node_id = $1
+      AND is_dry_run = true
+    ORDER BY started_at DESC
+    LIMIT 10
+  `, [agentId]);
+  
+  res.json({ data: rows });
+}));
+
+// ─── GET /api/agents/:id/dry-runs/latest ──────────────────────────────────────
+router.get('/:id/dry-runs/latest', handle(async (req, res) => {
+  const agentId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  
+  const { rows } = await pool.query(`
+    SELECT 
+      id, status, input_data, output_data, error_message,
+      started_at, ended_at,
+      EXTRACT(EPOCH FROM (COALESCE(ended_at, NOW()) - started_at))::int AS duration_seconds
+    FROM execution_runs
+    WHERE node_type = 'agent'
+      AND node_id = $1
+      AND is_dry_run = true
+    ORDER BY started_at DESC
+    LIMIT 1
+  `, [agentId]);
+  
+  if (rows.length === 0) {
+    // Return null data instead of 404 - this is expected for agents without dry runs
+    res.json({ data: null });
+    return;
+  }
+  
+  res.json({ data: rows[0] });
+}));
+
+// ─── DELETE /api/agents/:id ───────────────────────────────────────────────────
+router.delete('/:id', handle(async (req, res) => {
+  await pool.query(`DELETE FROM agents WHERE id = $1`, [req.params.id]);
+  res.json({ data: { deleted: true } });
+}));
+
+// ─── POST /api/agents/:id/run ─────────────────────────────────────────────────
+const RunSchema = z.object({ prompt: z.string().min(1) });
+
+router.post('/:id/run', handle(async (req, res) => {
+  const parsed = RunSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.flatten() }); return; }
 
   const agentId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;

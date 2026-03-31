@@ -14,8 +14,10 @@ async function req<T>(path: string, options?: RequestInit): Promise<T> {
 export type AgentRow = {
   id: string; name: string; skill: string; agent_group: string;
   llm_provider?: string; llm_provider_id?: string; provider_model?: string;
-  tools?: { id: string; name: string; description: string }[];
+  max_turns?: number; timeout_ms?: number; temperature?: number;
+  tools?: { id: string; name: string; description: string; risk_level: 'low' | 'medium' | 'high'; schema?: Record<string, unknown> }[];
   created_at: string;
+  updated_at?: string;
 };
 
 export const agentsApi = {
@@ -33,6 +35,23 @@ export const agentsApi = {
       tokenUsage?: { inputTokens: number; outputTokens: number };
       toolsUsed?: string[]; latencyMs?: number; error?: string;
     }>(`/api/agents/${id}/run`, { method: 'POST', body: JSON.stringify({ prompt }) }),
+  dryRun: (id: string, prompt: string) =>
+    req<{ runId: string; status: string }>(`/api/agents/${id}/dry-run`, { 
+      method: 'POST', 
+      body: JSON.stringify({ prompt }) 
+    }),
+  getDryRuns: (id: string) =>
+    req<Array<{
+      id: string; status: string; input_data: Record<string, unknown>;
+      output_data: Record<string, unknown> | null; error_message: string | null;
+      started_at: string; ended_at: string | null; duration_seconds: number;
+    }>>(`/api/agents/${id}/dry-runs`),
+  getLatestDryRun: (id: string) =>
+    req<{
+      id: string; status: string; input_data: Record<string, unknown>;
+      output_data: Record<string, unknown> | null; error_message: string | null;
+      started_at: string; ended_at: string | null; duration_seconds: number;
+    }>(`/api/agents/${id}/dry-runs/latest`),
   getGroups: () => req<string[]>('/api/agents/groups/list'),
   autoCategorize: (name: string, skill: string) =>
     req<{ group: string }>('/api/agents/auto-categorize', { 
@@ -54,6 +73,7 @@ export type ToolRow = {
   name: string;
   description: string;
   tool_group: string;
+  risk_level: 'low' | 'medium' | 'high';
   is_enabled: boolean;
   is_builtin?: boolean; // Virtual field added by API
   schema?: Record<string, unknown>;

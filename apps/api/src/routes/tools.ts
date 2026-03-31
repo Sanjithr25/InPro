@@ -26,7 +26,7 @@ const builtInNames = ToolRegistry.getBuiltInNames();
 // ─── GET /api/tools ──────────────────────────────────────────────────────────
 router.get('/', handle(async (_req, res) => {
   const { rows } = await pool.query(
-    `SELECT id, name, description, tool_group, is_enabled, created_at FROM tools ORDER BY name`
+    `SELECT id, name, description, tool_group, risk_level, is_enabled, created_at FROM tools ORDER BY name`
   );
   const data = rows.map(r => ({
     ...r,
@@ -38,7 +38,7 @@ router.get('/', handle(async (_req, res) => {
 // ─── GET /api/tools/:id ──────────────────────────────────────────────────────
 router.get('/:id', handle(async (req, res) => {
   const { rows } = await pool.query(
-    `SELECT id, name, description, tool_group, schema, config, is_enabled, created_at FROM tools WHERE id = $1`,
+    `SELECT id, name, description, tool_group, risk_level, schema, config, is_enabled, created_at FROM tools WHERE id = $1`,
     [req.params.id]
   );
   if (rows.length === 0) { res.status(404).json({ error: 'Tool not found' }); return; }
@@ -51,6 +51,7 @@ const ToolSchema = z.object({
   name:        z.string().min(1).max(100),
   description: z.string().default(''),
   tool_group:  z.string().default('General'),
+  risk_level:  z.enum(['low', 'medium', 'high']).default('low'),
   schema:      z.record(z.unknown()).default({}),
   config:      z.record(z.unknown()).default({}),
   is_enabled:  z.boolean().default(true),
@@ -60,11 +61,11 @@ const ToolSchema = z.object({
 router.post('/', handle(async (req, res) => {
   const parsed = ToolSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.flatten() }); return; }
-  const { name, description, tool_group, schema, config, is_enabled } = parsed.data;
+  const { name, description, tool_group, risk_level, schema, config, is_enabled } = parsed.data;
   const id = uuidv4();
   await pool.query(
-    `INSERT INTO tools (id, name, description, tool_group, schema, config, is_enabled) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-    [id, name, description, tool_group, JSON.stringify(schema), JSON.stringify(config), is_enabled]
+    `INSERT INTO tools (id, name, description, tool_group, risk_level, schema, config, is_enabled) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [id, name, description, tool_group, risk_level, JSON.stringify(schema), JSON.stringify(config), is_enabled]
   );
   res.status(201).json({ data: { id } });
 }));

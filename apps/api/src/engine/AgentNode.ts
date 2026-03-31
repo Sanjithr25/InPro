@@ -16,19 +16,24 @@ import { ToolRegistry } from './ToolRegistry.js';
 import { LLMProviderFactory, type ChatMessage } from './LLMProviderFactory.js';
 import { ExecutionContext, ExecutionResult, IExecutableNode, ToolDefinition } from '../types.js';
 import { logger } from '../utils/logger.js';
-
-const MAX_TURNS = 15;
+import { SystemConfig } from '../config/system.js';
 
 export class AgentNode implements IExecutableNode {
   async execute(ctx: ExecutionContext): Promise<ExecutionResult> {
     const { agentId, runId, prompt } = ctx.inputData;
     let agent: any = null; // Define outside try block for catch access
+    const startTime = Date.now();
 
     try {
       // ── 1. Fetch Agent ────────────────────────────────────────────────────
       const agentRes = await db.query(`SELECT * FROM agents WHERE id = $1`, [agentId]);
       if (agentRes.rows.length === 0) throw new Error(`Agent not found: ${agentId}`);
       agent = agentRes.rows[0];
+
+      // Get execution constraints from agent or system defaults
+      const maxTurns = agent.max_turns ?? SystemConfig.get<number>('agent.maxTurns', 15);
+      const timeoutMs = agent.timeout_ms ?? SystemConfig.get<number | null>('agent.defaultTimeout', null);
+      const temperature = agent.temperature ?? SystemConfig.get<number | null>('agent.defaultTemperature', null);
 
       // ── 2. Fetch Tools ────────────────────────────────────────────────────
       const toolsRes = await db.query(
@@ -81,12 +86,13 @@ export class AgentNode implements IExecutableNode {
 
       // ── 4. Mark run as running ────────────────────────────────────────────
       if (runId) {
+        console.log(`[AgentNode] Starting execution for runId: ${runId}, agentId: ${agentId}`);
         await db.query(`UPDATE execution_runs SET status = 'running' WHERE id = $1`, [runId]);
       }
 
       logger.agentStart(agent.name, agentId as string, runId as string, ctx.parentRunId || '', prompt as string);
 
-      // ── 5. Agentic Loop ───────────────────────────────────────────────────
+      // ── 5. Agentic Loop with Timeout ──────────────────────────────────────
       const messages: ChatMessage[] = [
         { role: 'system', content: agent.skill ?? 'You are a helpful AI assistant.' },
         { role: 'user',   content: prompt as string },
@@ -98,79 +104,98 @@ export class AgentNode implements IExecutableNode {
       const tokenUsage = { inputTokens: 0, outputTokens: 0 };
       let turn = 0;
 
-      while (turn < MAX_TURNS) {
-        turn++;
+      // Timeout handling
+      const timeoutPromise = timeoutMs 
+        ? new Promise<never>((_, reject) => 
+            setTimeout(() => reject(new Error(`Execution timeout after ${timeoutMs}ms`)), timeoutMs)
+          )
+        : null;
 
-        // Check for kill signal before each LLM call or tool execution
-        if (ctx.abortSignal?.aborted) {
-          logger.agentKilled(agent.name, agentId as string, runId as string);
-          outputText += '\n\n[Agent was killed by user]';
-          break;
-        }
+      const executeLoop = async () => {
+        while (turn < maxTurns) {
+          turn++;
 
-        console.log(`[AgentNode] Turn ${turn} — calling LLM (${providerOverride.provider ?? 'default'})`);
-
-        const response = await llm.chat(messages, toolDefs, { 
-          maxTokens: 4096,
-          signal: ctx.abortSignal 
-        });
-
-        if (response.inputTokens) {
-          tokenUsage.inputTokens += response.inputTokens;
-          tokenUsage.outputTokens += response.outputTokens;
-        }
-        // Collect assistant text
-        if (response.content) {
-          outputText += response.content + '\n';
-        }
-
-        // No tool calls → done
-        if (response.stopReason === 'end_turn' || response.toolCalls.length === 0) {
-          break;
-        }
-
-        // ── Tool execution round ─────────────────────────────────────────
-        // Append assistant turn with tool calls
-        messages.push({
-          role: 'assistant',
-          content: response.content,
-        } as ChatMessage);
-
-        // Execute each tool and append results as user messages
-        for (const tc of response.toolCalls) {
-          usedTools.push(tc.name);
-          console.log(`[AgentNode] Executing tool: ${tc.name}`, tc.arguments);
-          let toolResult: Record<string, unknown>;
-          
-          const callFingerprint = `${tc.name}:${JSON.stringify(tc.arguments)}`;
-          
-          if (executionHistory.has(callFingerprint)) {
-            // 🚨 Loop detected
-            console.log(`[AgentNode] ⚠️ Caught loop for tool: ${tc.name}`);
-            toolResult = {
-                error: 'terminal',
-                message: `[SYSTEM ALERT] You already executed this exact tool with identical arguments. Repeating the same action causes an infinite loop. You MUST change your approach, use different arguments, or end your turn.`
-            };
-          } else {
-            executionHistory.add(callFingerprint);
-            try {
-              toolResult = await ToolRegistry.execute(tc.name, tc.arguments, agentId as string | undefined, ctx.abortSignal);
-            } catch (toolErr: any) {
-              toolResult = { error: toolErr.message };
-            }
+          // Check for kill signal before each LLM call or tool execution
+          if (ctx.abortSignal?.aborted) {
+            logger.agentKilled(agent.name, agentId as string, runId as string);
+            outputText += '\n\n[Agent was killed by user]';
+            break;
           }
 
-          // Feed result back as a user message (simple text representation)
+          console.log(`[AgentNode] Turn ${turn}/${maxTurns} — calling LLM (${providerOverride.provider ?? 'default'})`);
+
+          // Build LLM options with temperature if specified
+          const llmOptions: any = { maxTokens: 4096, signal: ctx.abortSignal };
+          if (temperature !== null) {
+            llmOptions.temperature = temperature;
+          }
+
+          const response = await llm.chat(messages, toolDefs, llmOptions);
+
+          if (response.inputTokens) {
+            tokenUsage.inputTokens += response.inputTokens;
+            tokenUsage.outputTokens += response.outputTokens;
+          }
+          // Collect assistant text
+          if (response.content) {
+            outputText += response.content + '\n';
+          }
+
+          // No tool calls → done
+          if (response.stopReason === 'end_turn' || response.toolCalls.length === 0) {
+            break;
+          }
+
+          // ── Tool execution round ─────────────────────────────────────────
+          // Append assistant turn with tool calls
           messages.push({
-            role: 'user',
-            content: `Tool "${tc.name}" result:\n${JSON.stringify(toolResult, null, 2)}`,
-          });
+            role: 'assistant',
+            content: response.content,
+          } as ChatMessage);
+
+          // Execute each tool and append results as user messages
+          for (const tc of response.toolCalls) {
+            usedTools.push(tc.name);
+            console.log(`[AgentNode] Executing tool: ${tc.name}`, tc.arguments);
+            let toolResult: Record<string, unknown>;
+            
+            const callFingerprint = `${tc.name}:${JSON.stringify(tc.arguments)}`;
+            
+            if (executionHistory.has(callFingerprint)) {
+              // 🚨 Loop detected
+              console.log(`[AgentNode] ⚠️ Caught loop for tool: ${tc.name}`);
+              toolResult = {
+                  error: 'terminal',
+                  message: `[SYSTEM ALERT] You already executed this exact tool with identical arguments. Repeating the same action causes an infinite loop. You MUST change your approach, use different arguments, or end your turn.`
+              };
+            } else {
+              executionHistory.add(callFingerprint);
+              try {
+                toolResult = await ToolRegistry.execute(tc.name, tc.arguments, agentId as string | undefined, ctx.abortSignal, ctx.isDryRun);
+              } catch (toolErr: any) {
+                toolResult = { error: toolErr.message };
+              }
+            }
+
+            // Feed result back as a user message (simple text representation)
+            messages.push({
+              role: 'user',
+              content: `Tool "${tc.name}" result:\n${JSON.stringify(toolResult, null, 2)}`,
+            });
+          }
+          
+          // Brief delay against rate limits
+          if (turn < maxTurns - 1) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
         }
-        
-        // Brief delay against rate limits
-        if (turn < MAX_TURNS - 1) {
-          await new Promise(resolve => setTimeout(resolve, 1000));
-        }
+      };
+
+      // Execute with timeout if specified
+      if (timeoutPromise) {
+        await Promise.race([executeLoop(), timeoutPromise]);
+      } else {
+        await executeLoop();
       }
 
       // ── 6. Persist result ─────────────────────────────────────────────────
@@ -190,6 +215,8 @@ export class AgentNode implements IExecutableNode {
       const executionDuration = Date.now() - (ctx.inputData.startTime || Date.now());
 
       if (runId && !ctx.abortSignal?.aborted) {
+        console.log(`[AgentNode] Persisting completed result for runId: ${runId}`);
+        console.log(`[AgentNode] Final result:`, JSON.stringify(finalResult, null, 2));
         await db.query(
           `UPDATE execution_runs
            SET status = 'completed', ended_at = NOW(), output_data = $1, error_message = NULL
@@ -198,6 +225,7 @@ export class AgentNode implements IExecutableNode {
         );
         logger.agentEnd(agent.name, agentId as string, runId as string, true, executionDuration, usedTools);
       } else if (runId && ctx.abortSignal?.aborted) {
+        console.log(`[AgentNode] Agent was aborted for runId: ${runId}`);
         await db.query(
           `UPDATE execution_runs
            SET output_data = $1
@@ -210,6 +238,7 @@ export class AgentNode implements IExecutableNode {
       return finalResult;
 
     } catch (err: any) {
+      console.error(`[AgentNode] Execution error for runId: ${runId}, agentId: ${agentId}`, err);
       logger.error('Agent execution failed', 'agent', err, {
         agentName: agent?.name || 'Unknown',
         agentId: agentId as string,

@@ -424,3 +424,192 @@ npm run dev:web   # → http://localhost:3000
 - **Collapsible agent groups** — Agent sidebar supports collapsing/expanding groups with agent count badges for better organization.
 - **Abort signal support** — All LLM providers (OpenAI-compatible and Anthropic) now support abort signals for instant kill operations. When a task/schedule is killed, the LLM API call is immediately aborted, reducing kill latency from 40+ seconds to ~1 second.
 - **Query optimization** — History route uses JOIN instead of subquery for child counts (eliminates N+1 problem). Adaptive polling on scheduler page (3s when running, 10s when idle). Added composite index for top-level runs query.
+- **Enhanced tool logging** — ToolRegistry logs START/END with duration, success/failure status, output size, and explicit dry-run indication for full observability.
+- **Safer dry-run cleanup** — Uses OFFSET-based deletion to keep last N dry runs per agent, avoiding NOT IN subquery performance issues.
+- **Dry-run safety enforcement** — High-risk tools are automatically blocked during dry runs, with explicit logging of dry-run context in all tool executions.
+
+
+---
+
+## 10. Agent Execution Constraints & Tool Risk Classification ✅ COMPLETE
+
+### Overview
+Implemented comprehensive agent execution controls and tool risk visibility to provide fine-grained control over agent behavior and safety.
+
+### Database Schema Updates
+
+#### Agents Table
+Added three new optional columns for execution constraints:
+- `max_turns` (INTEGER) — Maximum conversation turns before stopping (default: 15 from SystemConfig)
+- `timeout_ms` (INTEGER) — Maximum execution time in milliseconds (optional, no default)
+- `temperature` (REAL) — LLM temperature parameter 0-2 (optional, uses provider default)
+
+All columns have CHECK constraints:
+- `max_turns > 0` (if not NULL)
+- `timeout_ms >= 0` (if not NULL)
+- `temperature >= 0 AND temperature <= 2` (if not NULL)
+
+#### Tools Table
+- `risk_level` column already exists with CHECK constraint ('low', 'medium', 'high')
+- Used for visual indication in UI
+
+### Backend Implementation
+
+#### System Configuration (`config/system.ts`)
+Added default values:
+- `agent.maxTurns`: 15
+- `agent.defaultTimeout`: null (no timeout)
+- `agent.defaultTemperature`: null (use provider default)
+
+#### API Routes
+**Agents Routes (`routes/agents.ts`)**:
+- All GET endpoints return `max_turns`, `timeout_ms`, `temperature`, `updated_at`
+- GET `/api/agents/:id` returns tools with `risk_level` and `schema`
+- POST/PUT validation schemas include new constraint fields (Zod)
+- Create/Update operations persist new fields to database
+
+**Tools Routes (`routes/tools.ts`)**:
+- All endpoints return `risk_level`
+- Validation includes `risk_level` enum
+- Create/Update operations handle `risk_level`
+
+#### Execution Engine (`engine/AgentNode.ts`)
+- Removed hardcoded `MAX_TURNS = 15`
+- Reads `max_turns` from agent row, falls back to SystemConfig default
+- Reads `timeout_ms` from agent row, falls back to SystemConfig default
+- Reads `temperature` from agent row, falls back to SystemConfig default
+- Implements timeout enforcement using `Promise.race()` pattern
+- Passes temperature to LLM provider if specified
+- All constraints are database-driven, no hardcoding
+
+### Frontend Implementation
+
+#### Types (`lib/api.ts`)
+- `AgentRow` includes `max_turns`, `timeout_ms`, `temperature`, `updated_at`
+- `AgentRow.tools` includes `risk_level` and `schema`
+- `ToolRow` includes `risk_level`
+
+#### Agents Page (`app/agents/page.tsx`)
+**State Management**:
+- Added `getRelativeTime()` utility for human-readable timestamps
+- Form state includes all constraint fields
+- `select()` loads constraint values from database
+- `save()` persists constraint values to database
+- Header displays "Last updated: X mins ago"
+
+**UI Components**:
+1. **Execution Constraints Card** (after Identity card):
+   - Max Turns input with default indicator
+   - Timeout (ms) input (optional)
+   - Temperature input (0-2, optional)
+   - Helpful descriptions for each field
+   - Settings icon for visual clarity
+
+2. **Tool Risk Badges**:
+   - Each tool chip displays risk level badge
+   - Color-coded: green (low), yellow (medium), red (high)
+   - Tooltip includes risk level information
+   - Badges are small and unobtrusive
+
+#### Styling (`app/globals.css`)
+Added risk badge styles:
+- `.risk-badge` — base styling
+- `.risk-low` — green background
+- `.risk-medium` — yellow background
+- `.risk-high` — red background
+
+### Migration
+- Created `migrate-agent-constraints.ts` script
+- Added npm script: `db:migrate-agent-constraints`
+- Migration executed successfully ✅
+- Uses `IF NOT EXISTS` for idempotency
+- Safe to run multiple times
+
+### Files Modified
+**Backend**:
+- `apps/api/src/db/schema.sql`
+- `apps/api/src/db/migrate-agent-constraints.ts` (new)
+- `apps/api/src/config/system.ts`
+- `apps/api/src/routes/agents.ts`
+- `apps/api/src/routes/tools.ts`
+- `apps/api/src/engine/AgentNode.ts`
+- `apps/api/package.json`
+
+**Frontend**:
+- `apps/web/src/lib/api.ts`
+- `apps/web/src/app/agents/page.tsx`
+- `apps/web/src/app/globals.css`
+
+### Key Features
+- **Database-driven**: All constraints stored in database, no hardcoding
+- **Optional fields**: All constraints are optional, sensible defaults apply
+- **Visual feedback**: Risk badges provide immediate safety indication
+- **Backward compatible**: Existing agents work without modification
+- **Type-safe**: Full TypeScript coverage with Zod validation
+- **User-friendly**: Clear labels, placeholders, and help text
+
+### Enhanced Tool Logging
+ToolRegistry now provides comprehensive execution logging:
+
+**Format**: `[ToolRegistry] START/END (dry-run?) "tool_name" (duration, status, output: size)`
+
+**Examples**:
+```
+[ToolRegistry] START "exa_search" | args: {"query":"AI agents","num_results":5}
+[ToolRegistry] END "exa_search" (320ms, success, output: 2.4KB)
+
+[ToolRegistry] START (dry-run) "write_file" | args: {"path":"test.txt",...}
+[ToolRegistry] END (dry-run) "write_file" (45ms, blocked: high-risk in dry-run)
+
+[ToolRegistry] START "tavily_search" | args: {"query":"weather"}
+[ToolRegistry] END "tavily_search" (1240ms, failed: terminal, output: 156B)
+```
+
+**Logged Information**:
+- Dry-run context (explicit `(dry-run)` prefix)
+- Tool name
+- Execution duration in milliseconds
+- Success/failure status with error type (recoverable/terminal)
+- Output size (bytes or KB)
+- Truncated args preview (first 200 chars)
+
+**Benefits**:
+- Verify dry-run safety rules are working
+- Track tool performance and identify slow operations
+- Debug tool failures with clear error types
+- Monitor output sizes to prevent context overflow
+- Full audit trail for compliance and debugging
+
+### Dry-Run Safety
+**Retention Policy**: Uses safer OFFSET-based cleanup
+```sql
+DELETE FROM execution_runs
+WHERE id IN (
+  SELECT id FROM execution_runs
+  WHERE node_type = 'agent' AND node_id = $agentId AND is_dry_run = true
+  ORDER BY started_at DESC
+  OFFSET $retentionCount
+)
+```
+
+**Benefits over NOT IN approach**:
+- Better query performance (no subquery scan)
+- Clearer intent (keep last N, delete rest)
+- Safer for large datasets
+- Predictable execution plan
+
+**High-Risk Tool Blocking**:
+- Tools with `risk_level = 'high'` are automatically blocked in dry runs
+- Explicit error message returned to LLM
+- Logged with `blocked: high-risk in dry-run` status
+- Prevents accidental destructive operations during testing
+
+### Testing Checklist
+- ✅ Database migration executed successfully
+- ✅ No TypeScript diagnostics errors
+- ✅ UI components properly integrated
+- ✅ Form state management working
+- ✅ API validation schemas updated
+- ✅ Execution engine respects constraints
+- ✅ Risk badges display correctly
+

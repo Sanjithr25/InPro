@@ -7,6 +7,7 @@ export interface ExecutionContext {
   maxDepth: number;
   parentRunId: string | null;
   abortSignal?: AbortSignal;
+  isDryRun?: boolean;
 }
 
 export interface ExecutionResult {

@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS agents (
   skill            TEXT NOT NULL DEFAULT '',    -- System prompt / .md skill text
   llm_provider_id  UUID REFERENCES llm_settings(id) ON DELETE SET NULL,
   agent_group      TEXT NOT NULL DEFAULT '',    -- Group multiple agents
+  max_turns        INTEGER CHECK (max_turns IS NULL OR max_turns > 0),
+  timeout_ms       INTEGER CHECK (timeout_ms IS NULL OR timeout_ms >= 0),
+  temperature      REAL CHECK (temperature IS NULL OR (temperature >= 0 AND temperature <= 2)),
   created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -46,6 +49,7 @@ CREATE TABLE IF NOT EXISTS tools (
   config      JSONB NOT NULL DEFAULT '{}',   -- Encrypted k/v (API keys etc.)
   tool_group  TEXT NOT NULL DEFAULT 'General',
   is_enabled  BOOLEAN NOT NULL DEFAULT true,
+  risk_level  TEXT NOT NULL DEFAULT 'low' CHECK (risk_level IN ('low','medium','high')),
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -109,7 +113,9 @@ CREATE TABLE IF NOT EXISTS execution_runs (
   error_message  TEXT,
   started_at     TIMESTAMPTZ,
   ended_at       TIMESTAMPTZ,
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  is_dry_run     BOOLEAN NOT NULL DEFAULT false,
+  trigger_type   TEXT DEFAULT 'manual' CHECK (trigger_type IN ('dry_run','manual','schedule'))
 );
 
 -- Tree traversal index (Run History page groups by parent)
@@ -127,6 +133,11 @@ CREATE INDEX IF NOT EXISTS idx_exec_runs_pending
 
 CREATE INDEX IF NOT EXISTS idx_exec_runs_node
   ON execution_runs(node_type, node_id);
+
+-- Dry run index for efficient queries
+CREATE INDEX IF NOT EXISTS idx_exec_runs_dry_agent
+  ON execution_runs(node_id, started_at DESC)
+  WHERE is_dry_run = true;
 
 -- ─── Seed: Default LLM provider (Llama Local) ──────────────────────────────────
 -- System-provided local llama model (no API key required)
