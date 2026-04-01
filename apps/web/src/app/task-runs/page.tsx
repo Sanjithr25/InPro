@@ -230,7 +230,7 @@ function TaskCard({ task, lastRun, runningRunId, expanded, onToggleExpand, runDe
                       ) : ar?.status === 'running' ? (
                         <span>Agent is working...</span>
                       ) : (
-                        <span>{step.description || 'Waiting for previous steps...'}</span>
+                        <span>Waiting for previous steps...</span>
                       )}
                     </div>
                     {ar?.error_message && (

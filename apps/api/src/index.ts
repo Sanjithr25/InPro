@@ -74,7 +74,7 @@ import { reconcileRuns } from './routes/task-runs.js';
 logger.info('Starting API Server', 'system', { 
   nodeVersion: process.version, 
   platform: process.platform,
-  env: config.env 
+  env: config.nodeEnv 
 });
 
 Promise.all([
