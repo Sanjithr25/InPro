@@ -545,7 +545,7 @@ export default function TasksPage() {
                         className="form-input"
                         placeholder="Step ID (e.g., step1)"
                         style={{ fontSize: 12, flex: 1 }}
-                        value={step.id}
+                        value={step.id || ''}
                         onChange={e => updateStep(i, { id: e.target.value })}
                       />
                       <button className="btn-icon" style={{ padding: 4 }} onClick={() => removeStep(i)}>
@@ -564,7 +564,7 @@ export default function TasksPage() {
                             className="form-input"
                             placeholder="Step name"
                             style={{ fontSize: 13 }}
-                            value={step.stepName}
+                            value={step.stepName || ''}
                             onChange={e => updateStep(i, { stepName: e.target.value })}
                           />
                         </div>
@@ -633,7 +633,7 @@ export default function TasksPage() {
                           rows={3}
                           placeholder="e.g. Analyze the following: {{input}} and combine with results from {{step1}}"
                           style={{ fontSize: 12 }}
-                          value={step.inputTemplate}
+                          value={step.inputTemplate || ''}
                           onChange={e => updateStep(i, { inputTemplate: e.target.value })}
                         />
                       </div>

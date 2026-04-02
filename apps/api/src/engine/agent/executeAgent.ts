@@ -55,11 +55,19 @@ export interface ExecutionSuccess {
   output: {
     text: string;
   };
+  text: string; // Flattened for easier access in UI/DB
   tokenUsage: {
     inputTokens: number;
     outputTokens: number;
   };
   toolsUsed: string[];
+  toolExecutions: Array<{
+    name: string;
+    status: 'completed' | 'failed';
+    arguments: Record<string, unknown>;
+    output: Record<string, unknown>;
+    duration: number;
+  }>;
   providerInfo: {
     name: string;
     model: string;
@@ -300,6 +308,7 @@ async function executeAgentLoop(
     // ── 4. Execution State ────────────────────────────────────────────────────
     let outputText = '';
     const usedTools: string[] = [];
+    const toolExecutions: ExecutionSuccess['toolExecutions'] = [];
     const executionHistory: Set<string> = new Set();
     const tokenUsage = { inputTokens: 0, outputTokens: 0 };
     let turn = 0;
@@ -404,6 +413,16 @@ async function executeAgentLoop(
           }
           
           const toolDuration = Date.now() - toolStartTime;
+          
+          // Store detailed execution for DB persistence
+          toolExecutions.push({
+            name: tc.name,
+            status: toolResult.error ? 'failed' : 'completed',
+            arguments: tc.arguments,
+            output: toolResult,
+            duration: toolDuration,
+          });
+
           onStream?.({ type: 'tool_result', data: { name: tc.name, result: toolResult, duration: toolDuration } });
 
           // Feed result back
@@ -432,8 +451,10 @@ async function executeAgentLoop(
       success: true,
       runId,
       output: { text: outputText.trim() || '(No text response)' },
+      text: outputText.trim() || '(No text response)', // Duplicate for flat access
       tokenUsage,
       toolsUsed: usedTools,
+      toolExecutions,
       providerInfo: {
         name: config.provider.provider,
         model: config.provider.model,

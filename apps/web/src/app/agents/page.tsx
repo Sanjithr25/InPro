@@ -1,8 +1,10 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Bot, Plus, Play, Save, Trash2, ChevronRight, ChevronDown, Zap, Clock, Hash, Upload, X, Settings } from 'lucide-react';
+import { Bot, Plus, Play, Save, Trash2, ChevronRight, ChevronDown, Zap, Clock, Hash, Upload, X, Edit2, AlertTriangle, Copy, Check } from 'lucide-react';
 import { agentsApi, toolsApi, llmApi, type AgentRow, type ToolRow, type LlmSettingRow } from '@/lib/api';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 // ─── Utility: Relative Time ──────────────────────────────────────────────────
 function getRelativeTime(dateString: string): string {
@@ -25,21 +27,130 @@ const blank = (): Partial<AgentRow> & { tool_ids: string[] } => ({
   name: '', skill: '', agent_group: '', llm_provider_id: '', tool_ids: [],
 });
 
+// ─── Markdown Renderer ───────────────────────────────────────────────────────
+function MarkdownRenderer({ content }: { content: string }) {
+  const [copiedCode, setCopiedCode] = useState<string | null>(null);
+
+  const copyCode = (code: string) => {
+    navigator.clipboard.writeText(code);
+    setCopiedCode(code);
+    setTimeout(() => setCopiedCode(null), 2000);
+  };
+
+  return (
+    <div style={{ fontFamily: 'Inter, sans-serif', lineHeight: 1.7, color: 'var(--text-primary)', fontSize: 14 }}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          p: ({ children }) => (
+            <p style={{ margin: '0 0 12px', lineHeight: 1.7, color: 'var(--text-primary)' }}>{children}</p>
+          ),
+          h1: ({ children }) => (
+            <h1 style={{ fontSize: 20, fontWeight: 700, margin: '20px 0 10px', color: 'var(--text-primary)', borderBottom: '1px solid var(--border)', paddingBottom: 8 }}>{children}</h1>
+          ),
+          h2: ({ children }) => (
+            <h2 style={{ fontSize: 17, fontWeight: 600, margin: '18px 0 8px', color: 'var(--text-primary)' }}>{children}</h2>
+          ),
+          h3: ({ children }) => (
+            <h3 style={{ fontSize: 15, fontWeight: 600, margin: '14px 0 6px', color: 'var(--text-secondary)' }}>{children}</h3>
+          ),
+          ul: ({ children }) => (
+            <ul style={{ margin: '8px 0 12px', paddingLeft: 20, display: 'flex', flexDirection: 'column', gap: 4 }}>{children}</ul>
+          ),
+          ol: ({ children }) => (
+            <ol style={{ margin: '8px 0 12px', paddingLeft: 20, display: 'flex', flexDirection: 'column', gap: 4 }}>{children}</ol>
+          ),
+          li: ({ children }) => (
+            <li style={{ color: 'var(--text-primary)', lineHeight: 1.6 }}>{children}</li>
+          ),
+          strong: ({ children }) => (
+            <strong style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{children}</strong>
+          ),
+          em: ({ children }) => (
+            <em style={{ fontStyle: 'italic', color: 'var(--text-secondary)' }}>{children}</em>
+          ),
+          a: ({ href, children }) => (
+            <a href={href} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-hover)', textDecoration: 'underline', textUnderlineOffset: 3 }}>{children}</a>
+          ),
+          blockquote: ({ children }) => (
+            <blockquote style={{ borderLeft: '3px solid var(--accent)', paddingLeft: 14, margin: '12px 0', color: 'var(--text-secondary)', fontStyle: 'italic' }}>{children}</blockquote>
+          ),
+          hr: () => (
+            <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '16px 0' }} />
+          ),
+          table: ({ children }) => (
+            <div style={{ overflowX: 'auto', margin: '12px 0' }}>
+              <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 13 }}>{children}</table>
+            </div>
+          ),
+          th: ({ children }) => (
+            <th style={{ padding: '8px 12px', background: 'var(--bg-elevated)', borderBottom: '2px solid var(--border)', textAlign: 'left', fontWeight: 600, fontSize: 12, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{children}</th>
+          ),
+          td: ({ children }) => (
+            <td style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', color: 'var(--text-primary)' }}>{children}</td>
+          ),
+          code: ({ className, children, ...props }: any) => {
+            const isBlock = className?.startsWith('language-');
+            const lang = className?.replace('language-', '') || '';
+            const codeStr = String(children).replace(/\n$/, '');
+            if (!isBlock) {
+              return (
+                <code style={{ background: 'var(--bg-elevated)', padding: '2px 6px', borderRadius: 4, fontSize: '0.87em', fontFamily: 'monospace', color: 'var(--accent-hover)' }}>{children}</code>
+              );
+            }
+            const isCopied = copiedCode === codeStr;
+            return (
+              <div style={{ position: 'relative', margin: '12px 0' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--bg-elevated)', borderRadius: '8px 8px 0 0', padding: '6px 14px', borderBottom: '1px solid var(--border)' }}>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{lang || 'code'}</span>
+                  <button
+                    onClick={() => copyCode(codeStr)}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: isCopied ? 'var(--green)' : 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, padding: '2px 6px', borderRadius: 4, transition: 'color 150ms' }}
+                  >
+                    {isCopied ? <Check width={12} height={12} /> : <Copy width={12} height={12} />}
+                    {isCopied ? 'Copied!' : 'Copy'}
+                  </button>
+                </div>
+                <pre style={{ background: 'var(--bg-base)', border: '1px solid var(--border)', borderTop: 'none', borderRadius: '0 0 8px 8px', padding: '14px 16px', overflowX: 'auto', margin: 0 }}>
+                  <code style={{ fontFamily: 'monospace', fontSize: 12.5, lineHeight: 1.7, color: 'var(--text-primary)', whiteSpace: 'pre' }}>{codeStr}</code>
+                </pre>
+              </div>
+            );
+          },
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
 export default function AgentsPage() {
   const [agents, setAgents]       = useState<AgentRow[]>([]);
   const [tools, setTools]         = useState<ToolRow[]>([]);
   const [providers, setProviders] = useState<LlmSettingRow[]>([]);
   const [groups, setGroups]       = useState<string[]>([]);
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
+    // Restore collapsed state from localStorage
+    try {
+      const stored = localStorage.getItem('agents-collapsed-groups');
+      return stored ? new Set(JSON.parse(stored)) : new Set();
+    } catch { return new Set(); }
+  });
   const [selected, setSelected]   = useState<AgentRow | null>(null);
   const [form, setForm]           = useState(blank());
   const [isNew, setIsNew]         = useState(false);
+  const [isEditing, setIsEditing] = useState(false); // edit mode for existing agents
   const [search, setSearch]       = useState('');
   const [saving, setSaving]       = useState(false);
   const [autoCategorizingGroup, setAutoCategorizingGroup] = useState(false);
   const fileInputRef              = useRef<HTMLInputElement>(null);
+  const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
 
-  // Dry run state - simple and clean
+  // Delete confirmation modal state
+  const [deleteModal, setDeleteModal] = useState<{ open: boolean; confirmText: string }>({ open: false, confirmText: '' });
+
+  // Dry run state
   const [dryRunPrompt, setDryRunPrompt] = useState('');
   const [dryRunning, setDryRunning] = useState(false);
   const [latestDryRun, setLatestDryRun] = useState<{
@@ -61,8 +172,10 @@ export default function AgentsPage() {
     outputSize?: string;
     output?: any;
   }>>([]);
+  const [streamingText, setStreamingText] = useState('');
   const outputRef = useRef<HTMLDivElement>(null);
-  const streamingTextRef = useRef<string>(''); // Use ref to avoid re-renders
+  const streamingTextRef = useRef<string>('');
+  const [renderedOutput, setRenderedOutput] = useState<string>('');
 
   // Load latest dry run for selected agent
   const loadLatestDryRun = useCallback(async (agentId: string) => {
@@ -77,16 +190,20 @@ export default function AgentsPage() {
       // Handle null data (no dry runs yet)
       if (!data) {
         setLatestDryRun(null);
+        setToolExecutions([]);
         return null;
       }
       
-      // Extract the actual output - it's nested as output_data.output
-      const actualOutput = data.output_data?.output || data.output_data;
+      // Extract the full execution object from DB
+      const resultObj = data.output_data;
+      
+      // The text is nested as resultObj.output.text or resultObj.output (if it's just the text)
+      const actualText = resultObj?.text || resultObj?.output?.text || resultObj?.output || '';
       
       const dryRun = {
         id: data.id,
         status: data.status,
-        output: actualOutput,
+        output: resultObj, // Keep the full object including telemetry
         error: data.error_message,
         started_at: data.started_at,
         ended_at: data.ended_at,
@@ -95,6 +212,31 @@ export default function AgentsPage() {
       };
       
       setLatestDryRun(dryRun);
+      setRenderedOutput(actualText);
+
+      // Restore tool executions from stored detailed tool executions
+      const storedExecutions = resultObj?.toolExecutions || [];
+      if (storedExecutions.length > 0) {
+        setToolExecutions(storedExecutions.map((te: any) => {
+          const success = te.status === 'completed';
+          const outputSize = te.output && success ? 
+            (typeof te.output === 'string' ? 
+              `${(te.output.length / 1024).toFixed(1)}KB` : 
+              `${(JSON.stringify(te.output).length / 1024).toFixed(1)}KB`) : 
+            undefined;
+
+          return {
+            name: te.name,
+            status: te.status,
+            args: te.arguments,
+            output: te.output,
+            duration: te.duration,
+            outputSize
+          };
+        }));
+      } else {
+        setToolExecutions([]);
+      }
       
       // If running, start polling
       if (data.status === 'running') {
@@ -105,6 +247,7 @@ export default function AgentsPage() {
     } catch (err: any) {
       // Silently handle errors - no dry runs yet or network issue
       setLatestDryRun(null);
+      setToolExecutions([]);
       return null;
     }
   }, []);
@@ -123,18 +266,43 @@ export default function AgentsPage() {
         // Handle null data
         if (!data) return;
         
-        const actualOutput = data.output_data?.output || data.output_data;
+        // Extract the full execution object
+        const resultObj = data.output_data;
+        const actualText = resultObj?.text || resultObj?.output?.text || resultObj?.output || '';
         
         setLatestDryRun({
           id: data.id,
           status: data.status,
-          output: actualOutput,
+          output: resultObj,
           error: data.error_message,
           started_at: data.started_at,
           ended_at: data.ended_at,
           duration_seconds: data.duration_seconds,
           input_data: data.input_data,
         });
+        setRenderedOutput(actualText);
+
+        // Restore tool executions if present (when completed)
+        const storedExecutions = resultObj?.toolExecutions || [];
+        if (storedExecutions.length > 0) {
+          setToolExecutions(storedExecutions.map((te: any) => {
+            const success = te.status === 'completed';
+            const outputSize = te.output && success ? 
+              (typeof te.output === 'string' ? 
+                `${(te.output.length / 1024).toFixed(1)}KB` : 
+                `${(JSON.stringify(te.output).length / 1024).toFixed(1)}KB`) : 
+              undefined;
+
+            return {
+              name: te.name,
+              status: te.status,
+              args: te.arguments,
+              output: te.output,
+              duration: te.duration,
+              outputSize
+            };
+          }));
+        }
 
         if (data.status !== 'running') {
           setDryRunning(false);
@@ -189,13 +357,20 @@ export default function AgentsPage() {
       tool_ids: (full.tools ?? []).map(t => t.id),
     });
     setIsNew(false);
+    setIsEditing(false); // reset edit mode on agent switch
+    setUploadedFileName(null);
     
-    // Load latest dry run and restore its prompt
+    // Load latest dry run and restore its prompt + output
     const latestRun = await loadLatestDryRun(full.id);
     if (latestRun) {
       setDryRunPrompt((latestRun.input_data as any)?.prompt || '');
+      const text = latestRun.output?.text || latestRun.output?.output?.text || (typeof latestRun.output === 'string' ? latestRun.output : '');
+      setRenderedOutput(text);
+      streamingTextRef.current = text;
     } else {
       setDryRunPrompt('');
+      setRenderedOutput('');
+      streamingTextRef.current = '';
     }
     setDryRunning(false);
   };
@@ -204,9 +379,13 @@ export default function AgentsPage() {
     setSelected(null);
     setForm(blank());
     setIsNew(true);
+    setIsEditing(true);
+    setUploadedFileName(null);
     setDryRunPrompt('');
     setDryRunning(false);
     setLatestDryRun(null);
+    setRenderedOutput('');
+    streamingTextRef.current = '';
   };
 
   const save = async () => {
@@ -225,13 +404,29 @@ export default function AgentsPage() {
         const created = await agentsApi.get(id);
         setSelected(created);
         setIsNew(false);
+        setIsEditing(false);
       } else if (selected) {
         await agentsApi.update(selected.id, payload);
         await load();
+        setIsEditing(false);
       }
     } finally {
       setSaving(false);
     }
+  };
+
+  const cancelEdit = () => {
+    if (!selected) return;
+    // Restore original form values
+    setForm({
+      name: selected.name,
+      skill: selected.skill,
+      agent_group: selected.agent_group ?? '',
+      llm_provider_id: selected.llm_provider_id ?? '',
+      tool_ids: (selected.tools ?? []).map(t => t.id),
+    });
+    setUploadedFileName(null);
+    setIsEditing(false);
   };
 
   const autoChooseGroup = async () => {
@@ -259,16 +454,24 @@ export default function AgentsPage() {
       } else {
         next.add(group);
       }
+      // Persist to localStorage
+      try { localStorage.setItem('agents-collapsed-groups', JSON.stringify([...next])); } catch {}
       return next;
     });
   };
 
   const del = async () => {
     if (!selected) return;
-    if (!confirm(`Delete agent "${selected.name}"?`)) return;
+    setDeleteModal({ open: true, confirmText: '' });
+  };
+
+  const confirmDelete = async () => {
+    if (!selected) return;
     await agentsApi.delete(selected.id);
+    setDeleteModal({ open: false, confirmText: '' });
     setSelected(null);
     setForm(blank());
+    setIsEditing(false);
     await load();
   };
 
@@ -279,6 +482,8 @@ export default function AgentsPage() {
     setDryRunning(true);
     setToolExecutions([]);
     streamingTextRef.current = '';
+    setRenderedOutput('');
+    setStreamingText('');
     
     setLatestDryRun({
       id: 'streaming',
@@ -326,19 +531,14 @@ export default function AgentsPage() {
               const data = JSON.parse(line.substring(5).trim());
               
               if (currentEvent === 'text' && data.delta) {
-                // Append to ref
                 streamingTextRef.current += data.delta;
-                
-                // Update DOM directly to prevent re-renders
-                const textSpan = document.getElementById('streaming-output-text');
-                if (textSpan) {
-                  textSpan.textContent = streamingTextRef.current;
-                }
-                
-                // Auto-scroll every 5 chunks
+                // Throttle state updates to every 5 chunks for performance
                 updateCounter++;
-                if (updateCounter % 5 === 0 && outputRef.current) {
-                  outputRef.current.scrollTop = outputRef.current.scrollHeight;
+                if (updateCounter % 5 === 0) {
+                  setStreamingText(streamingTextRef.current);
+                  if (outputRef.current) {
+                    outputRef.current.scrollTop = outputRef.current.scrollHeight;
+                  }
                 }
               } else if (currentEvent === 'tool_start') {
                 // Add tool to execution list
@@ -369,20 +569,21 @@ export default function AgentsPage() {
               } else if (currentEvent === 'done') {
                 const endTime = Date.now();
                 const durationSeconds = Math.round((endTime - executionStartTime) / 1000);
-                
+                const finalOutput = data.output || { text: streamingTextRef.current };
                 setLatestDryRun(prev => prev ? {
                   ...prev,
                   id: data.runId || prev.id,
                   status: 'completed',
-                  output: data.output || { text: streamingTextRef.current },
+                  output: finalOutput,
                   ended_at: new Date(endTime).toISOString(),
                   duration_seconds: durationSeconds,
                 } : null);
+                setRenderedOutput(finalOutput.text || streamingTextRef.current);
+                setStreamingText('');
                 setDryRunning(false);
               } else if (currentEvent === 'error') {
                 const endTime = Date.now();
                 const durationSeconds = Math.round((endTime - executionStartTime) / 1000);
-                
                 setLatestDryRun(prev => prev ? {
                   ...prev,
                   status: 'failed',
@@ -390,12 +591,10 @@ export default function AgentsPage() {
                   ended_at: new Date(endTime).toISOString(),
                   duration_seconds: durationSeconds,
                 } : null);
+                setStreamingText('');
                 setDryRunning(false);
               } else if (currentEvent === 'start') {
-                setLatestDryRun(prev => prev ? {
-                  ...prev,
-                  id: data.runId,
-                } : null);
+                setLatestDryRun(prev => prev ? { ...prev, id: data.runId } : null);
               }
             } catch (e) {
               console.error('Failed to parse SSE data:', e, line);
@@ -404,11 +603,11 @@ export default function AgentsPage() {
         }
       }
       
-      // Final state update
-      setLatestDryRun(prev => prev ? {
-        ...prev,
-        output: { text: streamingTextRef.current },
-      } : null);
+      // Final state flush
+      const finalText = streamingTextRef.current;
+      setRenderedOutput(finalText);
+      setStreamingText('');
+      setLatestDryRun(prev => prev ? { ...prev, output: { text: finalText } } : null);
       
     } catch (err: any) {
       const endTime = Date.now();
@@ -442,14 +641,19 @@ export default function AgentsPage() {
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setUploadedFileName(file.name);
     const reader = new FileReader();
     reader.onload = ev => {
       const text = ev.target?.result as string;
       setForm(f => ({ ...f, skill: text }));
     };
     reader.readAsText(file);
-    // reset so same file can be re-selected
     e.target.value = '';
+  };
+
+  const clearUploadedFile = () => {
+    setUploadedFileName(null);
+    setForm(f => ({ ...f, skill: '' }));
   };
 
   const showForm = isNew || selected !== null;
@@ -484,6 +688,7 @@ export default function AgentsPage() {
     }));
 
   return (
+    <>
     <div className="two-panel">
       {/* ── Left sidebar ──────────────────────────────────────────────────── */}
       <aside className="panel-left">
@@ -612,15 +817,29 @@ export default function AgentsPage() {
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
-                {!isNew && (
-                  <button className="btn btn-danger" onClick={del}>
-                    <Trash2 width={14} height={14} /> Delete
-                  </button>
+                {!isNew && !isEditing && (
+                  <>
+                    <button className="btn btn-danger" onClick={del}>
+                      <Trash2 width={14} height={14} /> Delete
+                    </button>
+                    <button className="btn btn-ghost" onClick={() => setIsEditing(true)}>
+                      <Edit2 width={14} height={14} /> Edit
+                    </button>
+                  </>
                 )}
-                <button className="btn btn-primary" onClick={save} disabled={saving}>
-                  {saving ? <span className="spinner" /> : <Save width={14} height={14} />}
-                  {saving ? 'Saving…' : 'Save Agent'}
-                </button>
+                {(isNew || isEditing) && (
+                  <>
+                    {!isNew && (
+                      <button className="btn btn-ghost" onClick={cancelEdit}>
+                        <X width={14} height={14} /> Cancel
+                      </button>
+                    )}
+                    <button className="btn btn-primary" onClick={save} disabled={saving}>
+                      {saving ? <span className="spinner" /> : <Save width={14} height={14} />}
+                      {saving ? 'Saving…' : 'Save Agent'}
+                    </button>
+                  </>
+                )}
               </div>
             </div>
 
@@ -636,6 +855,7 @@ export default function AgentsPage() {
                   placeholder="e.g. Research Analyst"
                   value={form.name}
                   onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                  disabled={!isNew && !isEditing}
                 />
               </div>
 
@@ -655,6 +875,7 @@ export default function AgentsPage() {
                       value={groups.includes(form.agent_group || '') ? form.agent_group : ''}
                       onChange={e => setForm(f => ({ ...f, agent_group: e.target.value }))}
                       style={{ flex: 1 }}
+                      disabled={!isNew && !isEditing}
                     >
                       <option value="">Select existing or type new…</option>
                       {groups.map(g => (
@@ -669,6 +890,7 @@ export default function AgentsPage() {
                       value={!groups.includes(form.agent_group || '') ? (form.agent_group || '') : ''}
                       onChange={e => setForm(f => ({ ...f, agent_group: e.target.value }))}
                       style={{ flex: 1 }}
+                      disabled={!isNew && !isEditing}
                     />
                   </div>
                   
@@ -676,7 +898,7 @@ export default function AgentsPage() {
                     type="button"
                     className="btn btn-ghost"
                     onClick={autoChooseGroup}
-                    disabled={autoCategorizingGroup || !form.name?.trim()}
+                    disabled={(!isNew && !isEditing) || autoCategorizingGroup || !form.name?.trim()}
                     title="Use AI to automatically categorize this agent"
                     style={{ 
                       minWidth: '120px',
@@ -708,6 +930,7 @@ export default function AgentsPage() {
                   className="form-select"
                   value={form.llm_provider_id}
                   onChange={e => setForm(f => ({ ...f, llm_provider_id: e.target.value }))}
+                  disabled={!isNew && !isEditing}
                 >
                   <option value="">
                     {defaultProvider
@@ -731,25 +954,31 @@ export default function AgentsPage() {
             <div className="card">
               <div className="card-title"><ChevronRight width={16} height={16} /> Skill / System Prompt</div>
 
-              {/* Upload or type toggle */}
-              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-                <button
-                  className="btn btn-ghost"
-                  style={{ fontSize: 12, padding: '5px 12px' }}
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  <Upload width={13} height={13} /> Upload .md file
-                </button>
-                {form.skill && (
+              {/* Upload button — shows filename after upload */}
+              <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'center' }}>
+                {uploadedFileName ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '5px 12px', fontSize: 12 }}>
+                    <Upload width={12} height={12} style={{ color: 'var(--accent-hover)' }} />
+                    <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{uploadedFileName}</span>
+                    {(isNew || isEditing) && (
+                      <button
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--red)', display: 'flex', padding: 2, marginLeft: 4 }}
+                        onClick={clearUploadedFile}
+                        title="Clear uploaded file"
+                      >
+                        <X width={12} height={12} />
+                      </button>
+                    )}
+                  </div>
+                ) : (isNew || isEditing) ? (
                   <button
                     className="btn btn-ghost"
-                    style={{ fontSize: 12, padding: '5px 10px', color: 'var(--red)' }}
-                    onClick={() => setForm(f => ({ ...f, skill: '' }))}
-                    title="Clear skill"
+                    style={{ fontSize: 12, padding: '5px 12px' }}
+                    onClick={() => fileInputRef.current?.click()}
                   >
-                    <X width={13} height={13} /> Clear
+                    <Upload width={13} height={13} /> Upload .md file
                   </button>
-                )}
+                ) : null}
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -768,6 +997,7 @@ export default function AgentsPage() {
                   placeholder={"You are a helpful AI assistant that specializes in…\n\nDescribe the agent's role, capabilities, tone, and any constraints."}
                   value={form.skill}
                   onChange={e => setForm(f => ({ ...f, skill: e.target.value }))}
+                  disabled={!isNew && !isEditing}
                 />
               </div>
             </div>
@@ -792,9 +1022,14 @@ export default function AgentsPage() {
                         {g.items.map(t => (
                           <div
                             key={t.id}
-                            className={`tool-chip${form.tool_ids?.includes(t.id) ? ' selected' : ''}`}
-                            onClick={() => toggleTool(t.id)}
+                            className={`tool-chip${form.tool_ids?.includes(t.id) ? ' selected' : ''}${(!isNew && !isEditing) ? ' disabled' : ''}`}
+                            onClick={() => (isNew || isEditing) && toggleTool(t.id)}
                             title={`${t.description}\n\nRisk Level: ${t.risk_level || 'low'}`}
+                            style={{ 
+                              cursor: (!isNew && !isEditing) ? 'default' : 'pointer', 
+                              opacity: (!isNew && !isEditing) ? 0.6 : 1,
+                              pointerEvents: (!isNew && !isEditing) ? 'none' : 'auto'
+                            }}
                           >
                             {t.name}
                             <span className={`risk-badge risk-${t.risk_level || 'low'}`}>
@@ -850,76 +1085,78 @@ export default function AgentsPage() {
                   />
                 </div>
 
-                {/* Response Output - only show when there's text or dryRunning */}
-                {latestDryRun && ((latestDryRun.output?.text !== undefined && latestDryRun.output?.text !== null) || dryRunning) ? (
+                {/* Response Output */}
+                {(latestDryRun || dryRunning) && (
                   <div style={{ marginTop: 20 }}>
-                    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                      Response
-                    </div>
-                    <div
-                      ref={outputRef}
-                      className="output-panel"
-                      style={{
-                        whiteSpace: 'pre-wrap',
-                        maxHeight: 360,
-                        overflowY: 'auto',
-                        borderColor: latestDryRun.error ? 'rgba(239,68,68,0.4)' : undefined,
-                        fontFamily: 'monospace',
-                        fontSize: 13,
-                        lineHeight: 1.6,
-                      }}
-                    >
-                      <span id="streaming-output-text">{!dryRunning ? latestDryRun?.output?.text : null}</span>
-                      {dryRunning && <span style={{ opacity: 0.5, animation: 'pulse 1s infinite' }}>▍</span>}
-                    </div>
-                    
-                    {/* Metadata */}
-                    <div className="output-meta">
-                      {latestDryRun.output?.tokenUsage && (
-                        <>
-                          <span><Hash width={11} height={11} /> {latestDryRun.output.tokenUsage.inputTokens} in</span>
-                          <span><Hash width={11} height={11} /> {latestDryRun.output.tokenUsage.outputTokens} out</span>
-                        </>
-                      )}
-                      {latestDryRun.output?.toolsUsed && latestDryRun.output.toolsUsed.length > 0 && (
-                        <span><Zap width={11} height={11} /> Tools: {latestDryRun.output.toolsUsed.join(', ')}</span>
-                      )}
-                      {latestDryRun.output?.providerInfo && (
-                        <span>🤖 {latestDryRun.output.providerInfo.name} / {latestDryRun.output.providerInfo.model}</span>
+                    {/* Header row */}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                        Response
+                      </div>
+                      {latestDryRun && !dryRunning && (
+                        <div className="output-meta" style={{ margin: 0 }}>
+                          {latestDryRun.output?.tokenUsage && (
+                            <>
+                              <span><Hash width={11} height={11} /> {latestDryRun.output.tokenUsage.inputTokens} in</span>
+                              <span><Hash width={11} height={11} /> {latestDryRun.output.tokenUsage.outputTokens} out</span>
+                            </>
+                          )}
+                          {latestDryRun.output?.toolsUsed?.length > 0 && (
+                            <span><Zap width={11} height={11} /> {latestDryRun.output.toolsUsed.join(', ')}</span>
+                          )}
+                          {latestDryRun.output?.providerInfo && (
+                            <span>🤖 {latestDryRun.output.providerInfo.model}</span>
+                          )}
+                        </div>
                       )}
                     </div>
 
-                    {/* Status indicator - only show after completion */}
-                    {!dryRunning && (latestDryRun.status === 'completed' || latestDryRun.status === 'failed') && (
-                      <div style={{ 
-                        marginTop: 12, 
-                        paddingTop: 12,
-                        borderTop: '1px solid var(--border)',
-                        fontSize: 12, 
-                        color: 'var(--text-muted)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 8
-                      }}>
+                    {/* Rendered output panel */}
+                    <div
+                      ref={outputRef}
+                      style={{
+                        background: 'var(--bg-base)',
+                        border: `1px solid ${latestDryRun?.error ? 'rgba(239,68,68,0.4)' : 'var(--border)'}`,
+                        borderRadius: 12,
+                        padding: '18px 20px',
+                        maxHeight: 500,
+                        overflowY: 'auto',
+                        minHeight: 80,
+                      }}
+                    >
+                      {/* Streaming — real-time text preview */}
+                      {dryRunning && (
+                        <div style={{ fontFamily: 'Inter, sans-serif', lineHeight: 1.7, color: 'var(--text-primary)', fontSize: 14, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                          {streamingText || <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>Waiting for response…</span>}
+                          <span style={{ opacity: 0.5, animation: 'pulse 1s infinite', marginLeft: 2 }}>▍</span>
+                        </div>
+                      )}
+
+                      {/* Completed — structured markdown render */}
+                      {!dryRunning && renderedOutput && (
+                        <MarkdownRenderer content={renderedOutput} />
+                      )}
+
+                      {/* Completed but no content */}
+                      {!dryRunning && !renderedOutput && latestDryRun && (
+                        <div style={{ color: 'var(--text-muted)', fontSize: 13, fontStyle: 'italic' }}>No response content.</div>
+                      )}
+                    </div>
+
+                    {/* Status bar */}
+                    {!dryRunning && latestDryRun && (latestDryRun.status === 'completed' || latestDryRun.status === 'failed') && (
+                      <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 8 }}>
                         <Clock width={12} height={12} />
                         <span suppressHydrationWarning>
                           Last run: {new Date(latestDryRun.ended_at || latestDryRun.started_at).toLocaleString()}
                           {' · '}
-                          Status: <strong style={{ 
-                            color: latestDryRun.status === 'completed' ? 'var(--green)' : 
-                                   latestDryRun.status === 'failed' ? 'var(--red)' : 
-                                   'var(--text-muted)'
-                          }}>
-                            {latestDryRun.status}
-                          </strong>
-                          {latestDryRun.duration_seconds !== null && (
-                            <> · Duration: {latestDryRun.duration_seconds}s</>
-                          )}
+                          Status: <strong style={{ color: latestDryRun.status === 'completed' ? 'var(--green)' : 'var(--red)' }}>{latestDryRun.status}</strong>
+                          {latestDryRun.duration_seconds !== null && <> · {latestDryRun.duration_seconds}s</>}
                         </span>
                       </div>
                     )}
                   </div>
-                ) : null}
+                )}
 
                 {/* Tool Execution Card - show when there are tool executions */}
                 {toolExecutions.length > 0 && (
@@ -971,23 +1208,7 @@ export default function AgentsPage() {
                               </span>
                             )}
                           </div>
-                          {tool.args && (
-                            <div style={{ 
-                              marginLeft: 78, 
-                              fontSize: 11, 
-                              color: 'var(--text-muted)',
-                              marginTop: 4,
-                              background: 'var(--bg-elevated)',
-                              padding: '4px 8px',
-                              borderRadius: 4,
-                              fontFamily: 'monospace',
-                              wordBreak: 'break-all',
-                              maxHeight: '100px',
-                              overflowY: 'auto'
-                            }}>
-                              <span style={{ color: 'var(--accent)' }}>args:</span> {typeof tool.args === 'string' ? tool.args : JSON.stringify(tool.args, null, 2)}
-                            </div>
-                          )}
+
                           {tool.output && (
                             <div style={{ 
                               marginLeft: 78, 
@@ -1050,5 +1271,61 @@ export default function AgentsPage() {
         )}
       </div>
     </div>
+
+    {/* ── Delete Confirmation Modal ─────────────────────────────────────── */}
+    {deleteModal.open && selected && (
+      <div style={{
+        position: 'fixed', inset: 0, zIndex: 1000,
+        background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>
+        <div style={{
+          background: 'var(--bg-elevated)', border: '1px solid rgba(239,68,68,0.4)',
+          borderRadius: 16, padding: 32, maxWidth: 440, width: '90%',
+          boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+            <div style={{ background: 'rgba(239,68,68,0.15)', borderRadius: 10, padding: 10, color: 'var(--red)' }}>
+              <AlertTriangle width={22} height={22} />
+            </div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 16, color: 'var(--text-primary)' }}>Delete Agent</div>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2 }}>This action cannot be undone</div>
+            </div>
+          </div>
+
+          <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 20, lineHeight: 1.6 }}>
+            To confirm, type <strong style={{ color: 'var(--text-primary)' }}>{selected.name}</strong> below:
+          </p>
+
+          <input
+            className="form-input"
+            placeholder={`Type "${selected.name}" to confirm`}
+            value={deleteModal.confirmText}
+            onChange={e => setDeleteModal(d => ({ ...d, confirmText: e.target.value }))}
+            style={{ marginBottom: 20, borderColor: 'rgba(239,68,68,0.4)' }}
+            autoFocus
+          />
+
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <button
+              className="btn btn-ghost"
+              onClick={() => setDeleteModal({ open: false, confirmText: '' })}
+            >
+              Cancel
+            </button>
+            <button
+              className="btn btn-danger"
+              onClick={confirmDelete}
+              disabled={deleteModal.confirmText !== selected.name}
+              style={{ opacity: deleteModal.confirmText !== selected.name ? 0.4 : 1 }}
+            >
+              <Trash2 width={14} height={14} /> Delete Agent
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }

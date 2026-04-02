@@ -269,6 +269,16 @@ body {
 }
 .form-textarea { resize: vertical; min-height: 100px; }
 .form-select option { background: var(--bg-elevated); }
+.form-input:disabled,
+.form-textarea:disabled,
+.form-select:disabled {
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.8;
+  border-color: var(--border);
+  box-shadow: none;
+}
 
 /* ─── Buttons ────────────────────────────────────────────────────────────── */
 .btn {
