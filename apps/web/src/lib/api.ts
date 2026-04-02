@@ -14,8 +14,7 @@ async function req<T>(path: string, options?: RequestInit): Promise<T> {
 export type AgentRow = {
   id: string; name: string; skill: string; agent_group: string;
   llm_provider?: string; llm_provider_id?: string; provider_model?: string;
-  max_turns?: number; timeout_ms?: number; temperature?: number;
-  tools?: { id: string; name: string; description: string; risk_level: 'low' | 'medium' | 'high'; schema?: Record<string, unknown> }[];
+  tools?: { id: string; name: string; description: string; risk_level: 'low' | 'high'; schema?: Record<string, unknown> }[];
   created_at: string;
   updated_at?: string;
 };
@@ -73,7 +72,7 @@ export type ToolRow = {
   name: string;
   description: string;
   tool_group: string;
-  risk_level: 'low' | 'medium' | 'high';
+  risk_level: 'low' | 'high';
   is_enabled: boolean;
   is_builtin?: boolean; // Virtual field added by API
   schema?: Record<string, unknown>;
@@ -83,15 +82,13 @@ export type ToolRow = {
 
 export const toolsApi = {
   list: () => req<ToolRow[]>('/api/tools'),
-  get:  (id: string) => req<ToolRow>(`/api/tools/${id}`),
-  create: (body: Omit<ToolRow, 'id' | 'created_at' | 'is_builtin'>) =>
-    req<{ id: string }>('/api/tools', { method: 'POST', body: JSON.stringify(body) }),
-  update: (id: string, body: Partial<Omit<ToolRow, 'id' | 'created_at' | 'is_builtin'>>) =>
+  update: (id: string, body: { is_enabled?: boolean, risk_level?: 'low' | 'high' }) =>
     req<{ updated: boolean }>(`/api/tools/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
-  delete: (id: string) =>
-    req<{ deleted: boolean }>(`/api/tools/${id}`, { method: 'DELETE' }),
-  toggle: (id: string, is_enabled: boolean) =>
-    req<{ updated: boolean }>(`/api/tools/${id}`, { method: 'PUT', body: JSON.stringify({ is_enabled }) }),
+};
+
+export const settingsApi = {
+  get: () => req<Record<string, any>>('/api/settings'),
+  set: (key: string, value: any) => req<{ success: boolean }>('/api/settings', { method: 'POST', body: JSON.stringify({ key, value }) })
 };
 
 // ─── Tasks ────────────────────────────────────────────────────────────────────
@@ -190,6 +187,7 @@ export type LlmSettingRow = {
   id: string; provider: string; base_url: string | null;
   model_name: string; is_default: boolean; has_key: boolean;
   extra_params: Record<string, unknown>;
+  max_turns?: number; timeout_ms?: number; temperature?: number;
 };
 
 export const llmApi = {

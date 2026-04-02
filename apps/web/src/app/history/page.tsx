@@ -63,9 +63,58 @@ function timeAgo(iso: string | null) {
 function RunDrawer({ runId, onClose, onDelete }: { runId: string; onClose: () => void; onDelete: () => void }) {
   const [run, setRun]     = useState<HistoryRunDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [streamingOutput, setStreamingOutput] = useState<string>('');
+  const [isStreaming, setIsStreaming] = useState(false);
 
   useEffect(() => {
-    historyApi.get(runId).then(r => { setRun(r); setLoading(false); });
+    let eventSource: EventSource | null = null;
+    
+    const loadRun = async () => {
+      const r = await historyApi.get(runId);
+      setRun(r);
+      setLoading(false);
+      
+      // If run is still running, start streaming
+      if (r.status === 'running') {
+        setIsStreaming(true);
+        eventSource = new EventSource(`http://localhost:3001/api/history/${runId}/stream`);
+        
+        eventSource.addEventListener('connected', () => {
+          console.log('Stream connected');
+        });
+        
+        eventSource.addEventListener('status', (e) => {
+          const data = JSON.parse(e.data);
+          setRun(prev => prev ? { ...prev, status: data.status } : null);
+        });
+        
+        eventSource.addEventListener('output', (e) => {
+          const data = JSON.parse(e.data);
+          if (data.text) {
+            setStreamingOutput(data.text);
+          }
+        });
+        
+        eventSource.addEventListener('done', () => {
+          setIsStreaming(false);
+          eventSource?.close();
+          // Reload full run data
+          historyApi.get(runId).then(r => setRun(r));
+        });
+        
+        eventSource.addEventListener('error', (e) => {
+          console.error('Stream error:', e);
+          setIsStreaming(false);
+          eventSource?.close();
+        });
+      }
+    };
+    
+    loadRun();
+    
+    return () => {
+      eventSource?.close();
+    };
   }, [runId]);
 
   return (
@@ -86,6 +135,20 @@ function RunDrawer({ runId, onClose, onDelete }: { runId: string; onClose: () =>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                 {run && <TypeBadge type={run.node_type} />}
                 <div style={{ fontSize: 16, fontWeight: 700 }}>{run?.source_name ?? 'Run Details'}</div>
+                {isStreaming && (
+                  <span style={{ 
+                    fontSize: 10, 
+                    padding: '2px 8px', 
+                    borderRadius: 4, 
+                    background: 'var(--accent-dim)', 
+                    color: 'var(--accent-hover)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 4
+                  }}>
+                    <Loader2 width={10} height={10} className="spin" /> LIVE
+                  </span>
+                )}
               </div>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{runId}</div>
             </div>
@@ -114,6 +177,22 @@ function RunDrawer({ runId, onClose, onDelete }: { runId: string; onClose: () =>
           </div>
         ) : run && (
           <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 20, overflowY: 'auto' }}>
+
+            {/* Streaming Output (for running tasks) */}
+            {isStreaming && streamingOutput && (
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Loader2 width={12} height={12} className="spin" /> Live Output
+                </div>
+                <div style={{
+                  background: 'var(--bg-base)', border: '1px solid var(--accent)', borderRadius: 8,
+                  padding: '14px 16px', fontSize: 13, color: 'var(--text-primary)',
+                  lineHeight: 1.7, whiteSpace: 'pre-wrap', maxHeight: 400, overflowY: 'auto',
+                }}>
+                  {streamingOutput}
+                </div>
+              </div>
+            )}
 
             {/* Children (only for schedule runs, not task runs since tasks show pipeline) */}
             {run.children && run.children.length > 0 && run.node_type === 'schedule' && (

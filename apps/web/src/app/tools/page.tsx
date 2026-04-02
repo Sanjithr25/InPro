@@ -2,78 +2,10 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import {
-  Wrench, Plus, Save, Trash2, Eye, EyeOff,
-  FlaskConical, Plug, ChevronDown, ChevronRight, X, RotateCcw, Zap,
-  FolderOpen, ChevronUp, Loader2,
+  Wrench, Settings, ShieldAlert, FolderOpen, Loader2, X, 
+  ChevronRight, ChevronDown, ShieldCheck, Zap, Search, Globe, Terminal, FileCode
 } from 'lucide-react';
-import { toolsApi, fsApi, type ToolRow, type FsBrowseResult } from '@/lib/api';
-
-// ─── Types ─────────────────────────────────────────────────────────────────────
-const FIELD_TYPES = ['text', 'secret', 'select', 'toggle'] as const;
-type FieldType = typeof FIELD_TYPES[number];
-
-interface ConfigEntry {
-  id: string;
-  key: string;
-  value: string;
-  type: FieldType;
-  options: string;
-  show: boolean;
-}
-
-const newEntry = (): ConfigEntry => ({
-  id: Math.random().toString(36).slice(2),
-  key: '', value: '', type: 'text', options: '', show: false,
-});
-
-const blankTool = (): Partial<ToolRow> & { entries: ConfigEntry[] } => ({
-  name: '', description: '', tool_group: 'General', is_enabled: true,
-  schema: {}, config: {}, is_builtin: false, entries: [],
-});
-
-// ─── Config helpers ────────────────────────────────────────────────────────────
-function entriesToConfig(entries: ConfigEntry[]): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const e of entries) {
-    if (!e.key.trim()) continue;
-    if (e.type === 'toggle')      { out[e.key] = e.value === 'true'; }
-    else if (e.type === 'select') { out[`${e.key}__options`] = e.options; out[e.key] = e.value; }
-    else                          { out[e.key] = e.value; }
-    out[`${e.key}__type`] = e.type;
-  }
-  return out;
-}
-
-function configToEntries(config: Record<string, unknown>): ConfigEntry[] {
-  const entries: ConfigEntry[] = [];
-  const seen = new Set<string>();
-  for (const rawKey of Object.keys(config)) {
-    if (rawKey.endsWith('__type') || rawKey.endsWith('__options')) continue;
-    if (seen.has(rawKey)) continue;
-    seen.add(rawKey);
-    entries.push({
-      id: Math.random().toString(36).slice(2),
-      key: rawKey,
-      value: String(config[rawKey] ?? ''),
-      type: (config[`${rawKey}__type`] as FieldType) ?? 'text',
-      options: (config[`${rawKey}__options`] as string) ?? '',
-      show: false,
-    });
-  }
-  return entries;
-}
-
-// ─── Sub-components ────────────────────────────────────────────────────────────
-function TypePill({ type, onClick }: { type: FieldType; onClick: () => void }) {
-  const labels: Record<FieldType, string> = {
-    text: 'Text', secret: '🔑 Secret', select: '▾ Select', toggle: '◉ Toggle',
-  };
-  return (
-    <button className={`type-pill ${type !== 'text' ? type : ''}`} onClick={onClick} type="button" title="Click to change type">
-      {labels[type]}
-    </button>
-  );
-}
+import { toolsApi, fsApi, settingsApi, type ToolRow, type FsBrowseResult } from '@/lib/api';
 
 // ─── Directory Picker Modal ────────────────────────────────────────────────────
 function DirPicker({ onSelect, onClose }: { onSelect: (path: string) => void; onClose: () => void }) {
@@ -107,57 +39,39 @@ function DirPicker({ onSelect, onClose }: { onSelect: (path: string) => void; on
         display: 'flex', flexDirection: 'column', gap: 12, boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
       }} onClick={e => e.stopPropagation()}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span style={{ fontWeight: 600, fontSize: 15 }}>📁 Choose Directory</span>
+          <span style={{ fontWeight: 600, fontSize: 15 }}>📁 Choose Root Directory</span>
           <button className="btn-icon" onClick={onClose}><X width={15} height={15} /></button>
         </div>
-
         <div style={{
           background: 'var(--bg-elevated)', borderRadius: 6, padding: '6px 10px',
           fontSize: 12, color: 'var(--text-secondary)', wordBreak: 'break-all', fontFamily: 'monospace'
         }}>
           {browse?.current || '…'}
         </div>
-
-        {/* Nav bar */}
-        <div style={{ display: 'flex', gap: 6 }}>
-          {browse?.parent && (
-            <button
-              className="btn btn-ghost"
-              style={{ fontSize: 12, padding: '4px 10px' }}
-              onClick={() => go(browse.parent!)}
-            >
-              <ChevronUp width={13} height={13} /> Up
-            </button>
-          )}
-        </div>
-
-        {/* Directory list */}
         <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
           {loading ? (
             <div style={{ display: 'flex', justifyContent: 'center', padding: 20 }}>
               <Loader2 width={20} height={20} className="spin" />
             </div>
-          ) : browse?.children.length === 0 ? (
-            <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '12px 4px' }}>No sub-folders</div>
           ) : (
-            browse?.children.map(child => (
-              <button
-                key={child.path}
-                className="nav-item"
-                style={{ justifyContent: 'flex-start', gap: 8, fontWeight: 400, fontSize: 13 }}
-                onClick={() => go(child.path)}
-              >
-                <FolderOpen width={14} height={14} style={{ color: 'var(--accent-hover)', flexShrink: 0 }} />
-                {child.name}
-              </button>
-            ))
+            <>
+              {browse?.parent && (
+                <button className="nav-item" style={{ fontWeight: 400, fontSize: 13, gap: 8 }} onClick={() => go(browse.parent!)}>
+                   .. (Up)
+                </button>
+              )}
+              {browse?.children.map(child => (
+                <button key={child.path} className="nav-item" style={{ justifyContent: 'flex-start', gap: 8, fontWeight: 400, fontSize: 13 }} onClick={() => go(child.path)}>
+                   <FolderOpen width={14} height={14} style={{ color: 'var(--accent-hover)', flexShrink: 0 }} /> {child.name}
+                </button>
+              ))}
+            </>
           )}
         </div>
-
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
           <button className="btn btn-primary" onClick={() => { if (browse) onSelect(browse.current); onClose(); }}>
-            <FolderOpen width={13} height={13} /> Select This Folder
+            Select Sandbox Root
           </button>
         </div>
       </div>
@@ -165,40 +79,27 @@ function DirPicker({ onSelect, onClose }: { onSelect: (path: string) => void; on
   );
 }
 
-type TestState = 'idle' | 'testing' | 'ok' | 'fail';
-
-// ─── Page ──────────────────────────────────────────────────────────────────────
 export default function ToolsPage() {
-  const [tools, setTools]     = useState<ToolRow[]>([]);
+  const [tools, setTools] = useState<ToolRow[]>([]);
   const [selected, setSelected] = useState<ToolRow | null>(null);
-  const [form, setForm]       = useState(blankTool());
-  const [isNew, setIsNew]     = useState(false);
-  const [search, setSearch]   = useState('');
-  const [saving, setSaving]   = useState(false);
-  const [testState, setTestState] = useState<TestState>('idle');
-  const [pickerEntryId, setPickerEntryId] = useState<string | null>(null);
+  const [rootDir, setRootDir] = useState<string>('');
+  const [search, setSearch] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
-
-  const toggleGroup = (group: string) => {
-    setCollapsedGroups(prev => {
-      const next = new Set(prev);
-      if (next.has(group)) {
-        next.delete(group);
-      } else {
-        next.add(group);
-      }
-      return next;
-    });
-  };
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [showGlobalSettings, setShowGlobalSettings] = useState(false);
 
   const load = useCallback(async () => {
-    setTools(await toolsApi.list());
+    try {
+      const [ts, st] = await Promise.all([toolsApi.list(), settingsApi.get()]);
+      setTools(ts);
+      if (st.root_directory) setRootDir(JSON.parse(st.root_directory));
+    } catch {}
   }, []);
 
   useEffect(() => { load(); }, [load]);
 
-  const filtered = tools.filter(t =>
-    t.name.toLowerCase().includes(search.toLowerCase()) ||
+  const filtered = tools.filter(t => 
+    t.name.toLowerCase().includes(search.toLowerCase()) || 
     t.description.toLowerCase().includes(search.toLowerCase())
   );
 
@@ -208,585 +109,215 @@ export default function ToolsPage() {
     acc[g].push(t);
     return acc;
   }, {});
-
-  const groupIcons: Record<string, string> = {
-    'Web Search': '🌐',
-    'File System': '📁',
-    'Built-in Utils': '⚡',
-    'General': '🔌',
+  
+  const groupIcons: Record<string, any> = {
+    'Web Operations': <Globe width={12} height={12} />,
+    'System Operations': <Terminal width={12} height={12} />,
+    'File Operations': <FileCode width={12} height={12} />,
   };
 
-  const groups = Object.keys(groupsRaw)
-    .sort((a, b) => {
-      if (a === 'Web Search') return -1;
-      if (b === 'Web Search') return 1;
-      if (a === 'File System') return -1;
-      if (b === 'File System') return 1;
-      return a.localeCompare(b);
-    })
-    .map(title => ({
-      title,
-      icon: groupIcons[title] || '🛠️',
-      items: groupsRaw[title]
-    }));
+  const groups = Object.keys(groupsRaw).sort((a,b) => {
+    const order: Record<string, number> = { 'Web Operations': 1, 'File Operations': 2, 'System Operations': 3 };
+    return (order[a] || 99) - (order[b] || 99);
+  });
 
-  // ── Counts ──────────────────────────────────────────────────────────────────
-  const activeCount  = tools.filter(t => t.is_enabled).length;
-  const builtinCount = tools.filter(t => t.is_builtin).length;
-
-  // ── Select ─────────────────────────────────────────────────────────────────
-  const selectTool = async (tool: ToolRow) => {
-    const full = await toolsApi.get(tool.id);
-    setSelected(full);
-    setForm({
-      name: full.name, description: full.description,
-      tool_group: full.tool_group,
-      is_enabled: full.is_enabled, is_builtin: full.is_builtin,
-      schema: full.schema ?? {}, config: full.config ?? {},
-      entries: configToEntries(full.config ?? {}),
-    });
-    setIsNew(false);
-    setTestState('idle');
-  };
-
-  // ── New ────────────────────────────────────────────────────────────────────
-  const newTool = () => {
-    setSelected(null);
-    setForm(blankTool());
-    setIsNew(true);
-    setTestState('idle');
-  };
-
-  // ── Save ───────────────────────────────────────────────────────────────────
-  const save = async () => {
-    setSaving(true);
-    try {
-      const config = entriesToConfig(form.entries ?? []);
-      const payload = {
-        name: form.name ?? '',
-        description: form.description ?? '',
-        tool_group: form.tool_group ?? 'General',
-        is_enabled: form.is_enabled ?? true,
-        schema: form.schema ?? {},
-        config,
-      };
-      if (isNew) {
-        const { id } = await toolsApi.create(payload as any);
-        await load();
-        const created = await toolsApi.get(id);
-        setSelected(created);
-        setForm({ ...payload, is_builtin: false, entries: configToEntries(config) });
-        setIsNew(false);
-      } else if (selected) {
-        await toolsApi.update(selected.id, payload as any);
-        await load();
-      }
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  // ── Delete ─────────────────────────────────────────────────────────────────
-  const del = async () => {
-    if (!selected) return;
-    if (!confirm(`Delete "${selected.name}"?`)) return;
-    await toolsApi.delete(selected.id);
-    setSelected(null);
-    setForm(blankTool());
-    await load();
-  };
-
-  // ── Toggle ─────────────────────────────────────────────────────────────────
-  const toggle = async (tool: ToolRow, e: React.MouseEvent) => {
+  const toggleGroup = (g: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    await toolsApi.toggle(tool.id, !tool.is_enabled);
-    await load();
-    if (selected?.id === tool.id) setForm(f => ({ ...f, is_enabled: !tool.is_enabled }));
+    setCollapsedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(g)) next.delete(g); else next.add(g);
+      return next;
+    });
   };
 
-  // ── Config entries ─────────────────────────────────────────────────────────
-  const addEntry    = () => setForm(f => ({ ...f, entries: [...(f.entries ?? []), newEntry()] }));
-  const updateEntry = (id: string, patch: Partial<ConfigEntry>) =>
-    setForm(f => ({ ...f, entries: (f.entries ?? []).map(e => e.id === id ? { ...e, ...patch } : e) }));
-  const removeEntry = (id: string) =>
-    setForm(f => ({ ...f, entries: (f.entries ?? []).filter(e => e.id !== id) }));
-  const cycleType   = (id: string, cur: FieldType) =>
-    updateEntry(id, { type: FIELD_TYPES[(FIELD_TYPES.indexOf(cur) + 1) % FIELD_TYPES.length] });
-
-  // ── Test connection ────────────────────────────────────────────────────────
-  const testConnection = async () => {
-    setTestState('testing');
-    try {
-      const config   = entriesToConfig(form.entries ?? []);
-      const endpoint = config['endpoint'] ?? config['url'] ?? config['base_url'] as string;
-      if (!endpoint || typeof endpoint !== 'string') { setTestState('fail'); return; }
-      const res = await fetch(endpoint, {
-        method: (config['method'] as string) || 'GET',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      setTestState(res.ok ? 'ok' : 'fail');
-    } catch { setTestState('fail'); }
-    setTimeout(() => setTestState('idle'), 3500);
+  const toggleEnable = async (id: string, current: boolean) => {
+    await toolsApi.update(id, { is_enabled: !current });
+    load();
   };
 
-  const hasEndpoint = (form.entries ?? []).some(e =>
-    ['endpoint', 'url', 'base_url'].includes(e.key.toLowerCase())
-  );
-  const showForm = isNew || selected !== null;
+  const cycleRisk = async (id: string, current: string) => {
+    await toolsApi.update(id, { risk_level: current === 'low' ? 'high' : 'low' });
+    load();
+  };
+
+  const updateRootDir = async (path: string) => {
+    setRootDir(path);
+    await settingsApi.set('root_directory', JSON.stringify(path));
+  };
+
+  const showForm = showGlobalSettings || selected !== null;
 
   return (
     <div className="two-panel">
-      {/* Directory Picker Modal */}
-      {pickerEntryId && (
-        <DirPicker
-          onClose={() => setPickerEntryId(null)}
-          onSelect={path => {
-            updateEntry(pickerEntryId, { value: path });
-            setPickerEntryId(null);
-          }}
-        />
-      )}
+      {pickerOpen && <DirPicker onClose={() => setPickerOpen(false)} onSelect={updateRootDir} />}
 
       {/* ── Left sidebar ──────────────────────────────────────────────────── */}
       <aside className="panel-left">
         <div className="panel-header">
           <h2>Tools</h2>
-          <button className="btn-icon" onClick={newTool} title="New tool">
-            <Plus width={15} height={15} />
+          <button 
+            className={`btn-icon ${showGlobalSettings ? 'active' : ''}`} 
+            onClick={() => { setShowGlobalSettings(!showGlobalSettings); setSelected(null); }}
+            title="Global Settings"
+            style={{ color: showGlobalSettings ? 'var(--accent)' : 'inherit' }}
+          >
+            <Settings width={15} height={15} />
           </button>
         </div>
 
         <div className="search-wrap">
           <input
             className="search-input"
-            placeholder="Search tools…"
+            placeholder="Search tools or groups…"
             value={search}
             onChange={e => setSearch(e.target.value)}
           />
         </div>
 
-        {/* Stats */}
-        {tools.length > 0 && (
-          <div style={{
-            fontSize: 11, color: 'var(--text-muted)',
-            padding: '4px 14px 8px',
-            display: 'flex', gap: 8, flexWrap: 'wrap',
-          }}>
-            <span>{activeCount} active</span>
-            <span style={{ opacity: 0.4 }}>·</span>
-            <span>{tools.length} total</span>
-            <span style={{ opacity: 0.4 }}>·</span>
-            <span>{builtinCount} built-in</span>
-          </div>
-        )}
-
         <div className="list-scroll">
-          {filtered.length === 0 && (
-            <div className="empty-state">
-              <Wrench width={32} height={32} />
-              <p>No tools yet.<br />Click + to create one.</p>
-            </div>
-          )}
-
-          {groups.map(g => g.items.length > 0 && (
-            <div key={g.title}>
-              <div 
-                onClick={() => toggleGroup(g.title)}
-                style={{
-                  margin: '8px 10px 6px',
-                  padding: '6px 10px',
-                  fontSize: 10,
-                  fontWeight: 700,
-                  letterSpacing: '0.05em',
-                  textTransform: 'uppercase',
-                  color: 'var(--text-primary)',
-                  background: 'var(--bg-elevated)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 12,
-                  userSelect: 'none',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  transition: 'all 150ms ease',
-                  boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = 'var(--bg-surface)';
-                  e.currentTarget.style.borderColor = 'var(--accent)';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = 'var(--bg-elevated)';
-                  e.currentTarget.style.borderColor = 'var(--border)';
-                }}
-              >
-                {collapsedGroups.has(g.title) ? (
-                  <ChevronRight width={12} height={12} style={{ color: 'var(--text-muted)' }} />
-                ) : (
-                  <ChevronDown width={12} height={12} style={{ color: 'var(--text-muted)' }} />
-                )}
-                <span>{g.icon}</span>
-                <span style={{ flex: 1 }}>{g.title}</span>
-                <span style={{ 
-                  fontSize: 9,
-                  fontWeight: 600,
-                  background: 'var(--accent-dim)',
-                  color: 'var(--accent-hover)',
-                  padding: '2px 7px',
-                  borderRadius: 100,
-                  minWidth: 20,
-                  textAlign: 'center',
-                }}>
-                  {g.items.length}
-                </span>
-              </div>
-              {!collapsedGroups.has(g.title) && g.items.map(tool => (
-                <div
-                  key={tool.id}
-                  className={`list-item${selected?.id === tool.id ? ' selected' : ''}`}
-                  onClick={() => selectTool(tool)}
+          {groups.map(g => {
+             const isCollapsed = collapsedGroups.has(g);
+             return (
+              <div key={g}>
+                <div 
+                  onClick={(e) => toggleGroup(g, e)}
+                  style={{
+                    margin: '8px 10px 6px',
+                    padding: '6px 10px',
+                    fontSize: 10,
+                    fontWeight: 700,
+                    letterSpacing: '0.05em',
+                    textTransform: 'uppercase',
+                    color: 'var(--text-primary)',
+                    background: 'var(--bg-elevated)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 12,
+                    userSelect: 'none',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    transition: 'all 150ms ease',
+                    boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
+                  }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'space-between' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flex: 1 }}>
-                      <span className="list-item-name" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {tool.name}
-                      </span>
-                      {tool.is_builtin && (
-                        <span style={{
-                          fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
-                          padding: '1px 5px', borderRadius: 10, flexShrink: 0,
-                          background: 'color-mix(in srgb, var(--accent) 15%, transparent)',
-                          color: 'var(--accent-hover)',
-                          border: '1px solid color-mix(in srgb, var(--accent) 28%, transparent)',
-                        }}>
-                          BUILT-IN
-                        </span>
-                      )}
-                    </div>
-                    <label className="toggle" style={{ flexShrink: 0 }} onClick={e => toggle(tool, e)}>
-                      <input type="checkbox" checked={tool.is_enabled} readOnly />
-                      <span className="toggle-track" />
-                    </label>
-                  </div>
-                  <div className="list-item-meta" style={{ marginTop: 4, lineHeight: 1.4, opacity: 0.8 }}>
-                    {tool.description.substring(0, 50)}…
-                  </div>
+                  {isCollapsed ? <ChevronRight width={12} height={12} style={{ color: 'var(--text-muted)' }} /> : <ChevronDown width={12} height={12} style={{ color: 'var(--text-muted)' }} />}
+                  <span style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {groupIcons[g]} {g}
+                  </span>
+                  <span style={{ fontSize: 9, opacity: 0.5, fontWeight: 600 }}>{groupsRaw[g].length}</span>
                 </div>
-              ))}
-            </div>
-          ))}
+                {!isCollapsed && groupsRaw[g].map(tool => (
+                  <div
+                    key={tool.id}
+                    className={`list-item ${selected?.id === tool.id ? 'selected' : ''}`}
+                    onClick={() => { setSelected(tool); setShowGlobalSettings(false); }}
+                  >
+                    <div className="list-item-name">{tool.name}</div>
+                    <div className="list-item-meta">{tool.risk_level.toUpperCase()} RISK · {tool.is_enabled ? 'ENABLED' : 'DISABLED'}</div>
+                  </div>
+                ))}
+              </div>
+             );
+          })}
         </div>
       </aside>
 
       {/* ── Right panel ───────────────────────────────────────────────────── */}
       <div className="panel-right">
-
-        {/* Empty state */}
-        {!showForm && (
+        {!showForm ? (
           <div className="empty-state" style={{ height: '100%' }}>
             <Wrench width={48} height={48} />
-            <p>Select a tool to configure,<br />or click <strong>+</strong> to create a new one.</p>
-            <button className="btn btn-primary" onClick={newTool}>
-              <Plus width={14} height={14} /> New Tool
-            </button>
+            <p>Select a tool from the sidebar to edit,<br/>or click <Settings width={14} height={14} style={{ display: 'inline', opacity: 0.7 }}/> for global settings.</p>
           </div>
-        )}
-
-        {/* Tool form */}
-        {showForm && (
-          <>
-            {/* Header */}
-            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 24 }}>
-              <div style={{ minWidth: 0 }}>
-                <div className="page-title" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  {isNew ? 'New Tool' : selected?.name}
-                  {!isNew && selected?.is_builtin && (
-                    <span style={{
-                      fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 12,
-                      background: 'color-mix(in srgb, var(--accent) 15%, transparent)',
-                      color: 'var(--accent-hover)',
-                      border: '1px solid color-mix(in srgb, var(--accent) 28%, transparent)',
-                      display: 'inline-flex', alignItems: 'center', gap: 4,
-                    }}>
-                      <Zap width={10} height={10} /> Built-in
-                    </span>
-                  )}
-                </div>
-                <div className="page-subtitle">
-                  {isNew ? 'Define name, description, configuration, and schema' : `ID: ${selected?.id}`}
-                </div>
-              </div>
-              <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-                {!isNew && (
-                  <button className="btn btn-danger" onClick={del}>
-                    <Trash2 width={14} height={14} /> Delete
-                  </button>
-                )}
-                <button className="btn btn-primary" onClick={save} disabled={saving}>
-                  {saving ? <span className="spinner" /> : <Save width={14} height={14} />}
-                  {saving ? 'Saving…' : 'Save'}
-                </button>
-              </div>
-            </div>
-
-            {/* Identity */}
+        ) : showGlobalSettings ? (
+          <div style={{ maxWidth: 800 }}>
+             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
+                <div className="page-title">Global Tool Settings</div>
+             </div>
+            <div className="page-subtitle">Configure sandboxing and system-wide security policies.</div>
+            
             <div className="card">
-              <div className="card-title"><Plug width={16} height={16} /> Identity</div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-                <div className="form-group">
-                  <label className="form-label">Tool Name</label>
-                  <input
-                    className="form-input"
-                    placeholder="e.g. search_web"
-                    disabled={form.is_builtin}
-                    value={form.name}
-                    onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-                  />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Group / Category</label>
-                  <input
-                    className="form-input"
-                    placeholder="e.g. Web Search, File System…"
-                    value={form.tool_group}
-                    onChange={e => setForm(f => ({ ...f, tool_group: e.target.value }))}
-                  />
-                </div>
-              </div>
-              <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-                Use snake_case. Names matching built-ins (web_search, calculator, http_request, etc.) run natively.
-              </p>
-
+              <div className="card-title"><FolderOpen width={16} height={16} /> Sandbox Configuration</div>
               <div className="form-group">
-                <label className="form-label">
-                  Description{' '}
-                  <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>
-                    — tell the LLM when and why to call this tool
-                  </span>
-                </label>
-                <textarea
-                  id="tool-description"
-                  className="form-textarea"
-                  rows={3}
-                  placeholder="Use when you need to… Do NOT use for… Returns…"
-                  value={form.description}
-                  onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
-                />
-              </div>
-
-              <div className="toggle-wrap" style={{ marginBottom: 0 }}>
-                <label className="toggle">
-                  <input
-                    type="checkbox"
-                    checked={form.is_enabled ?? true}
-                    onChange={e => setForm(f => ({ ...f, is_enabled: e.target.checked }))}
-                  />
-                  <span className="toggle-track" />
-                </label>
-                <span style={{ fontSize: 13, color: form.is_enabled ? 'var(--green)' : 'var(--text-muted)' }}>
-                  {form.is_enabled ? 'Enabled — agents can use this tool' : 'Disabled — hidden from agents'}
-                </span>
+                <label className="form-label">Root Directory</label>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input readOnly className="form-input" value={rootDir || 'Documents (default)'} style={{ flex: 1 }} />
+                  <button className="btn btn-ghost" onClick={() => setPickerOpen(true)}>Browse</button>
+                </div>
+                <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8 }}>
+                  All file-system tools are strictly confined to this path. Traversal attempts (e.g. ../) will be blocked.
+                </p>
               </div>
             </div>
 
-            {/* Configuration */}
             <div className="card">
-              <div className="card-title"><Wrench width={16} height={16} /> Configuration</div>
-              <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>
-                Key-value config stored in the DB (API keys, endpoints, timeouts). 
-                Click a type badge to cycle: <strong>Text → Secret → Select → Toggle</strong>.
-              </p>
-
-              {(form.entries ?? []).length > 0 && (
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8, marginBottom: 6, padding: '0 2px' }}>
-                  <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.04em' }}>KEY</span>
-                  <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.04em' }}>VALUE</span>
-                  <span style={{ width: 88 }} />
-                </div>
-              )}
-
-              {(form.entries ?? []).map(entry => (
-                <div key={entry.id} className="kv-row">
-                  <input
-                    className="form-input"
-                    placeholder="key"
-                    style={{ fontSize: 13 }}
-                    value={entry.key}
-                    onChange={e => updateEntry(entry.id, { key: e.target.value })}
-                  />
-
-                  {entry.type === 'toggle' ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 4px', alignSelf: 'flex-start', minHeight: 40 }}>
-                      <label className="toggle">
-                        <input
-                          type="checkbox"
-                          checked={entry.value === 'true'}
-                          onChange={e => updateEntry(entry.id, { value: e.target.checked ? 'true' : 'false' })}
-                        />
+              <div className="card-title" style={{ color: 'var(--red)' }}><ShieldAlert width={16} height={16} /> Security Policies</div>
+              <ul style={{ fontSize: 13, color: 'var(--text-secondary)', paddingLeft: 20, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <li><strong>High Risk Policy:</strong> Tools tagged as "High Risk" are automatically disabled during Dry Runs.</li>
+                <li><strong>Command Filtering:</strong> The Bash tool permanently blocks destructive verbs (rm, sudo, etc.).</li>
+                <li><strong>Output Safety:</strong> All tool results are truncated to protect LLM context windows.</li>
+              </ul>
+            </div>
+          </div>
+        ) : selected && (
+          <div style={{ maxWidth: 800 }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 28 }}>
+              <div>
+                <div className="page-title">{selected.name}</div>
+                <div className="page-subtitle">{selected.tool_group} capability</div>
+              </div>
+              <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                 <div className="toggle-wrap">
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{selected.is_enabled ? 'Active' : 'Disabled'}</span>
+                    <label className="toggle">
+                        <input type="checkbox" checked={selected.is_enabled} onChange={() => toggleEnable(selected.id, selected.is_enabled)} />
                         <span className="toggle-track" />
-                      </label>
-                      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{entry.value === 'true' ? 'On' : 'Off'}</span>
-                    </div>
-                  ) : entry.type === 'select' ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignSelf: 'flex-start' }}>
-                      <input
-                        className="form-input"
-                        placeholder="options (comma-separated)"
-                        style={{ fontSize: 12, padding: '5px 10px' }}
-                        value={entry.options}
-                        onChange={e => updateEntry(entry.id, { options: e.target.value })}
-                      />
-                      <select
-                        className="form-select"
-                        style={{ fontSize: 12, padding: '5px 10px' }}
-                        value={entry.value}
-                        onChange={e => updateEntry(entry.id, { value: e.target.value })}
-                      >
-                        <option value="">— select —</option>
-                        {entry.options.split(',').map(o => o.trim()).filter(Boolean).map(o => (
-                          <option key={o} value={o}>{o}</option>
-                        ))}
-                      </select>
-                    </div>
-                  ) : (
-                    <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start', alignSelf: 'flex-start' }}>
-                      <div style={{ position: 'relative', flex: 1 }}>
-                        <input
-                          className="form-input"
-                          style={{ fontSize: 13, paddingRight: entry.type === 'secret' ? 36 : undefined, width: '100%' }}
-                          type={entry.type === 'secret' && !entry.show ? 'password' : 'text'}
-                          placeholder={entry.type === 'secret' ? '••••••••' : 'value'}
-                          value={entry.value}
-                          onChange={e => updateEntry(entry.id, { value: e.target.value })}
-                        />
-                        {entry.type === 'secret' && (
-                          <button
-                            type="button" className="btn-icon"
-                            style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', background: 'none', padding: 4 }}
-                            onClick={() => updateEntry(entry.id, { show: !entry.show })}
-                          >
-                            {entry.show ? <EyeOff width={13} height={13} /> : <Eye width={13} height={13} />}
-                          </button>
-                        )}
-                      </div>
-                      
-                      {/* Browse button for directory/path keys */}
-                      {(entry.key === 'allowed_dirs' || entry.key.toLowerCase().includes('dir') || entry.key.toLowerCase().includes('path')) && (
-                        <button
-                          type="button"
-                          className="btn btn-ghost"
-                          style={{ fontSize: 11, padding: '0 8px', height: 38, flexShrink: 0, whiteSpace: 'nowrap' }}
-                          onClick={() => setPickerEntryId(entry.id)}
-                          title="Browse server filesystem"
-                        >
-                          <FolderOpen width={12} height={12} /> <span style={{marginLeft: 4}}>Browse</span>
-                        </button>
-                      )}
-                    </div>
-                  )}
-
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, alignSelf: 'flex-start', minHeight: 40 }}>
-                    <TypePill type={entry.type} onClick={() => cycleType(entry.id, entry.type)} />
-                    <button className="btn-icon" onClick={() => removeEntry(entry.id)} title="Remove" style={{ padding: 5 }}>
-                      <X width={13} height={13} />
-                    </button>
-                  </div>
-                </div>
-              ))}
-
-              <button
-                className="btn btn-ghost"
-                style={{ marginTop: 12, fontSize: 12, padding: '6px 14px' }}
-                onClick={addEntry}
-              >
-                <Plus width={13} height={13} /> Add Parameter
-              </button>
-
-              {(hasEndpoint || !isNew) && (
-                <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <button
-                    className="btn btn-ghost"
-                    style={{ fontSize: 12, padding: '6px 14px' }}
-                    onClick={testConnection}
-                    disabled={testState === 'testing'}
-                  >
-                    {testState === 'testing' ? <span className="spinner" /> : <FlaskConical width={13} height={13} />}
-                    {testState === 'testing' ? 'Testing…' : 'Test Connection'}
-                  </button>
-                  {testState === 'ok'   && <span style={{ fontSize: 12, color: 'var(--green)' }}>✓ Reachable</span>}
-                  {testState === 'fail' && <span style={{ fontSize: 12, color: 'var(--red)' }}>✗ Failed — check endpoint &amp; auth</span>}
-                  {testState === 'idle' && hasEndpoint && (
-                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Test the endpoint before saving</span>
-                  )}
-                </div>
-              )}
+                    </label>
+                 </div>
+              </div>
             </div>
 
-            {/* JSON Schema (collapsible) */}
-            <JsonSchemaCard
-              value={form.schema ?? {}}
-              onChange={schema => setForm(f => ({ ...f, schema }))}
-            />
-          </>
+            <div className="card">
+              <div className="card-title">Description</div>
+              <p style={{ fontSize: 14, lineHeight: 1.6, color: 'var(--text-primary)' }}>{selected.description}</p>
+            </div>
+
+            <div className="card">
+               <div className="card-title">Capability Risk Model</div>
+               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <button 
+                    onClick={() => cycleRisk(selected.id, selected.risk_level)}
+                    style={{
+                      background: selected.risk_level === 'high' ? 'rgba(239, 68, 68, 0.1)' : 'rgba(34, 197, 94, 0.1)',
+                      color: selected.risk_level === 'high' ? 'var(--red)' : 'var(--green)',
+                      padding: '8px 16px', borderRadius: 8, fontSize: 12, fontWeight: 700, border: 'none', cursor: 'pointer',
+                      display: 'flex', alignItems: 'center', gap: 8
+                    }}
+                  >
+                    {selected.risk_level === 'high' ? <ShieldAlert width={14} height={14} /> : <ShieldCheck width={14} height={14} />}
+                    {selected.risk_level.toUpperCase()} RISK
+                  </button>
+                  <p style={{ fontSize: 12, color: 'var(--text-muted)', flex: 1 }}>
+                    {selected.risk_level === 'high' 
+                      ? 'This tool can modify files or execute system code.' 
+                      : 'This tool primarily performs passive searches or reads data.'}
+                  </p>
+               </div>
+            </div>
+
+            <div className="card" style={{ background: 'var(--bg-base)' }}>
+              <div className="card-title" style={{ fontSize: 13, opacity: 0.8 }}>LLM Schema Definition</div>
+              <pre style={{ 
+                fontSize: 12, fontFamily: 'monospace', color: 'var(--text-secondary)', 
+                overflowX: 'auto', padding: 12, background: 'rgba(0,0,0,0.2)', borderRadius: 8 
+              }}>
+                {JSON.stringify(selected.schema, null, 2)}
+              </pre>
+            </div>
+          </div>
         )}
       </div>
-    </div>
-  );
-}
-
-// ─── JSON Schema card ──────────────────────────────────────────────────────────
-function JsonSchemaCard({ value, onChange }: { value: Record<string, unknown>; onChange: (v: Record<string, unknown>) => void }) {
-  const [open, setOpen] = useState(false);
-  const [raw, setRaw]   = useState(JSON.stringify(value, null, 2));
-  const [err, setErr]   = useState('');
-
-  const apply = () => {
-    try { onChange(JSON.parse(raw)); setErr(''); }
-    catch (e: any) { setErr(e.message); }
-  };
-
-  return (
-    <div className="card">
-      <button
-        type="button"
-        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-primary)', padding: 0 }}
-        onClick={() => setOpen(o => !o)}
-      >
-        <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 15, fontWeight: 600 }}>
-          <ChevronDown width={16} height={16} style={{ transform: open ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.18s' }} />
-          JSON Schema
-          <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-muted)', marginLeft: 4 }}>
-            (LLM function-calling spec)
-          </span>
-        </span>
-      </button>
-
-      {open && (
-        <div style={{ marginTop: 16 }}>
-          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>
-            Defines parameters the LLM must supply when calling this tool.
-            Follows <a href="https://json-schema.org" target="_blank" rel="noreferrer" style={{ color: 'var(--accent-hover)' }}>JSON Schema draft-07</a>.
-          </p>
-          <textarea
-            className="form-textarea"
-            rows={10}
-            style={{ fontFamily: "'Fira Code', monospace", fontSize: 12 }}
-            value={raw}
-            onChange={e => setRaw(e.target.value)}
-          />
-          {err && <p style={{ color: 'var(--red)', fontSize: 12, marginTop: 6 }}>JSON error: {err}</p>}
-          <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
-            <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={apply}>
-              <Save width={12} height={12} /> Apply Schema
-            </button>
-            <button className="btn btn-ghost" style={{ fontSize: 12, color: 'var(--text-muted)' }}
-              onClick={() => { setRaw(JSON.stringify(value, null, 2)); setErr(''); }}>
-              <RotateCcw width={12} height={12} /> Reset
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

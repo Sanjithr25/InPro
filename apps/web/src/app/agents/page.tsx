@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Bot, Plus, Play, Save, Trash2, ChevronRight, ChevronDown, Zap, Clock, Hash, Upload, X, Settings, Timer, Thermometer } from 'lucide-react';
+import { Bot, Plus, Play, Save, Trash2, ChevronRight, ChevronDown, Zap, Clock, Hash, Upload, X, Settings } from 'lucide-react';
 import { agentsApi, toolsApi, llmApi, type AgentRow, type ToolRow, type LlmSettingRow } from '@/lib/api';
 
 // ─── Utility: Relative Time ──────────────────────────────────────────────────
@@ -23,7 +23,6 @@ function getRelativeTime(dateString: string): string {
 // ─── Initial state ────────────────────────────────────────────────────────────
 const blank = (): Partial<AgentRow> & { tool_ids: string[] } => ({
   name: '', skill: '', agent_group: '', llm_provider_id: '', tool_ids: [],
-  max_turns: undefined, timeout_ms: undefined, temperature: undefined,
 });
 
 export default function AgentsPage() {
@@ -53,7 +52,17 @@ export default function AgentsPage() {
     duration_seconds: number | null;
     input_data?: any;
   } | null>(null);
+  const [toolExecutions, setToolExecutions] = useState<Array<{
+    name: string;
+    status: 'running' | 'completed' | 'failed';
+    duration?: number;
+    error?: string;
+    args?: any;
+    outputSize?: string;
+    output?: any;
+  }>>([]);
   const outputRef = useRef<HTMLDivElement>(null);
+  const streamingTextRef = useRef<string>(''); // Use ref to avoid re-renders
 
   // Load latest dry run for selected agent
   const loadLatestDryRun = useCallback(async (agentId: string) => {
@@ -178,9 +187,6 @@ export default function AgentsPage() {
       agent_group: full.agent_group ?? '',
       llm_provider_id: full.llm_provider_id ?? '',
       tool_ids: (full.tools ?? []).map(t => t.id),
-      max_turns: full.max_turns,
-      timeout_ms: full.timeout_ms,
-      temperature: full.temperature,
     });
     setIsNew(false);
     
@@ -212,9 +218,6 @@ export default function AgentsPage() {
         agent_group: form.agent_group ?? '',
         llm_provider_id: form.llm_provider_id || undefined,
         tool_ids: form.tool_ids ?? [],
-        max_turns: form.max_turns || undefined,
-        timeout_ms: form.timeout_ms || undefined,
-        temperature: form.temperature || undefined,
       };
       if (isNew) {
         const { id } = await agentsApi.create(payload);
@@ -272,26 +275,153 @@ export default function AgentsPage() {
   const run = async () => {
     if (!selected || !dryRunPrompt.trim()) return;
     
+    const executionStartTime = Date.now();
     setDryRunning(true);
-    setLatestDryRun(null);
+    setToolExecutions([]);
+    streamingTextRef.current = '';
+    
+    setLatestDryRun({
+      id: 'streaming',
+      status: 'running',
+      output: { text: '' },
+      error: null,
+      started_at: new Date().toISOString(),
+      ended_at: null,
+      duration_seconds: null,
+      input_data: { prompt: dryRunPrompt },
+    });
     
     try {
-      const response = await fetch(`http://localhost:3001/api/agents/${selected.id}/dry-run`, {
+      const response = await fetch(`http://localhost:3001/api/agents/${selected.id}/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: dryRunPrompt }),
       });
       
       if (!response.ok) {
-        const { error } = await response.json();
-        throw new Error(error || 'Failed to start dry run');
+        throw new Error('Failed to start streaming');
       }
       
-      // Start polling for updates
-      setTimeout(() => loadLatestDryRun(selected.id), 1000);
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let currentEvent = '';
+      let updateCounter = 0;
+      
+      while (reader) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          
+          if (line.startsWith('event:')) {
+            currentEvent = line.substring(6).trim();
+          } else if (line.startsWith('data:')) {
+            try {
+              const data = JSON.parse(line.substring(5).trim());
+              
+              if (currentEvent === 'text' && data.delta) {
+                // Append to ref
+                streamingTextRef.current += data.delta;
+                
+                // Update DOM directly to prevent re-renders
+                const textSpan = document.getElementById('streaming-output-text');
+                if (textSpan) {
+                  textSpan.textContent = streamingTextRef.current;
+                }
+                
+                // Auto-scroll every 5 chunks
+                updateCounter++;
+                if (updateCounter % 5 === 0 && outputRef.current) {
+                  outputRef.current.scrollTop = outputRef.current.scrollHeight;
+                }
+              } else if (currentEvent === 'tool_start') {
+                // Add tool to execution list
+                setToolExecutions(prev => [...prev, {
+                  name: data.name,
+                  status: 'running',
+                  args: data.args,
+                }]);
+              } else if (currentEvent === 'tool_result') {
+                // Update tool status
+                const success = !data.result?.error;
+                const outputSize = data.result && success ? 
+                  (typeof data.result === 'string' ? 
+                    `${(data.result.length / 1024).toFixed(1)}KB` : 
+                    `${(JSON.stringify(data.result).length / 1024).toFixed(1)}KB`) : 
+                  undefined;
+                
+                setToolExecutions(prev => prev.map((tool, idx) => 
+                  idx === prev.length - 1 ? {
+                    ...tool,
+                    status: success ? 'completed' : 'failed',
+                    duration: data.duration,
+                    outputSize,
+                    output: success ? data.result : undefined,
+                    error: success ? undefined : (data.result?.message || data.result?.error || 'Unknown error'),
+                  } : tool
+                ));
+              } else if (currentEvent === 'done') {
+                const endTime = Date.now();
+                const durationSeconds = Math.round((endTime - executionStartTime) / 1000);
+                
+                setLatestDryRun(prev => prev ? {
+                  ...prev,
+                  id: data.runId || prev.id,
+                  status: 'completed',
+                  output: data.output || { text: streamingTextRef.current },
+                  ended_at: new Date(endTime).toISOString(),
+                  duration_seconds: durationSeconds,
+                } : null);
+                setDryRunning(false);
+              } else if (currentEvent === 'error') {
+                const endTime = Date.now();
+                const durationSeconds = Math.round((endTime - executionStartTime) / 1000);
+                
+                setLatestDryRun(prev => prev ? {
+                  ...prev,
+                  status: 'failed',
+                  error: data.message,
+                  ended_at: new Date(endTime).toISOString(),
+                  duration_seconds: durationSeconds,
+                } : null);
+                setDryRunning(false);
+              } else if (currentEvent === 'start') {
+                setLatestDryRun(prev => prev ? {
+                  ...prev,
+                  id: data.runId,
+                } : null);
+              }
+            } catch (e) {
+              console.error('Failed to parse SSE data:', e, line);
+            }
+          }
+        }
+      }
+      
+      // Final state update
+      setLatestDryRun(prev => prev ? {
+        ...prev,
+        output: { text: streamingTextRef.current },
+      } : null);
+      
     } catch (err: any) {
+      const endTime = Date.now();
+      const durationSeconds = Math.round((endTime - executionStartTime) / 1000);
+      
       setDryRunning(false);
-      alert(`Failed to start dry run: ${err.message}`);
+      setLatestDryRun(prev => prev ? {
+        ...prev,
+        status: 'failed',
+        error: err.message,
+        ended_at: new Date(endTime).toISOString(),
+        duration_seconds: durationSeconds,
+      } : null);
     }
   };
 
@@ -596,72 +726,6 @@ export default function AgentsPage() {
               </div>
             </div>
 
-            {/* ── Execution Constraints card ──────────────────────────────── */}
-            <div className="card">
-              <div className="card-title"><Settings width={16} height={16} /> Execution Constraints</div>
-
-              <div className="form-group">
-                <label className="form-label">
-                  Max Turns
-                  <span style={{ color: 'var(--text-muted)', fontWeight: 400, marginLeft: 6 }}>
-                    (default: 15)
-                  </span>
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  className="form-input"
-                  placeholder="15"
-                  value={form.max_turns ?? ''}
-                  onChange={e => setForm(f => ({ ...f, max_turns: e.target.value ? parseInt(e.target.value) : undefined }))}
-                />
-                <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-muted)' }}>
-                  Maximum number of conversation turns before stopping
-                </div>
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">
-                  Timeout (ms)
-                  <span style={{ color: 'var(--text-muted)', fontWeight: 400, marginLeft: 6 }}>
-                    (optional)
-                  </span>
-                </label>
-                <input
-                  type="number"
-                  min="0"
-                  className="form-input"
-                  placeholder="No timeout"
-                  value={form.timeout_ms ?? ''}
-                  onChange={e => setForm(f => ({ ...f, timeout_ms: e.target.value ? parseInt(e.target.value) : undefined }))}
-                />
-                <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-muted)' }}>
-                  Maximum execution time in milliseconds (leave empty for no timeout)
-                </div>
-              </div>
-
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label">
-                  Temperature
-                  <span style={{ color: 'var(--text-muted)', fontWeight: 400, marginLeft: 6 }}>
-                    (0-2, optional)
-                  </span>
-                </label>
-                <input
-                  type="number"
-                  min="0"
-                  max="2"
-                  step="0.1"
-                  className="form-input"
-                  placeholder="Provider default"
-                  value={form.temperature ?? ''}
-                  onChange={e => setForm(f => ({ ...f, temperature: e.target.value ? parseFloat(e.target.value) : undefined }))}
-                />
-                <div style={{ marginTop: 4, fontSize: 11, color: 'var(--text-muted)' }}>
-                  Controls randomness: 0 = deterministic, 2 = very creative
-                </div>
-              </div>
-            </div>
 
             {/* ── Skill card ──────────────────────────────────────────────── */}
             <div className="card">
@@ -786,38 +850,12 @@ export default function AgentsPage() {
                   />
                 </div>
 
-                {/* Status indicator */}
-                {latestDryRun && (
-                  <div style={{ 
-                    marginTop: 12, 
-                    fontSize: 12, 
-                    color: 'var(--text-muted)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8
-                  }}>
-                    <Clock width={12} height={12} />
-                    <span>
-                      Last run: {new Date(latestDryRun.started_at).toLocaleString()}
-                      {' · '}
-                      Status: <strong style={{ 
-                        color: latestDryRun.status === 'completed' ? 'var(--green)' : 
-                               latestDryRun.status === 'failed' ? 'var(--red)' : 
-                               latestDryRun.status === 'running' ? 'var(--accent)' : 
-                               'var(--text-muted)'
-                      }}>
-                        {latestDryRun.status}
-                      </strong>
-                      {latestDryRun.duration_seconds !== null && (
-                        <> · Duration: {latestDryRun.duration_seconds}s</>
-                      )}
-                    </span>
-                  </div>
-                )}
-
-                {/* Output display */}
-                {latestDryRun?.output && (
+                {/* Response Output - only show when there's text or dryRunning */}
+                {latestDryRun && ((latestDryRun.output?.text !== undefined && latestDryRun.output?.text !== null) || dryRunning) ? (
                   <div style={{ marginTop: 20 }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                      Response
+                    </div>
                     <div
                       ref={outputRef}
                       className="output-panel"
@@ -831,24 +869,163 @@ export default function AgentsPage() {
                         lineHeight: 1.6,
                       }}
                     >
-                      {latestDryRun.output.text || JSON.stringify(latestDryRun.output, null, 2)}
+                      <span id="streaming-output-text">{!dryRunning ? latestDryRun?.output?.text : null}</span>
                       {dryRunning && <span style={{ opacity: 0.5, animation: 'pulse 1s infinite' }}>▍</span>}
                     </div>
                     
                     {/* Metadata */}
                     <div className="output-meta">
-                      {latestDryRun.output.tokenUsage && (
+                      {latestDryRun.output?.tokenUsage && (
                         <>
                           <span><Hash width={11} height={11} /> {latestDryRun.output.tokenUsage.inputTokens} in</span>
                           <span><Hash width={11} height={11} /> {latestDryRun.output.tokenUsage.outputTokens} out</span>
                         </>
                       )}
-                      {latestDryRun.output.toolsUsed && latestDryRun.output.toolsUsed.length > 0 && (
+                      {latestDryRun.output?.toolsUsed && latestDryRun.output.toolsUsed.length > 0 && (
                         <span><Zap width={11} height={11} /> Tools: {latestDryRun.output.toolsUsed.join(', ')}</span>
                       )}
-                      {latestDryRun.output.providerInfo && (
+                      {latestDryRun.output?.providerInfo && (
                         <span>🤖 {latestDryRun.output.providerInfo.name} / {latestDryRun.output.providerInfo.model}</span>
                       )}
+                    </div>
+
+                    {/* Status indicator - only show after completion */}
+                    {!dryRunning && (latestDryRun.status === 'completed' || latestDryRun.status === 'failed') && (
+                      <div style={{ 
+                        marginTop: 12, 
+                        paddingTop: 12,
+                        borderTop: '1px solid var(--border)',
+                        fontSize: 12, 
+                        color: 'var(--text-muted)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8
+                      }}>
+                        <Clock width={12} height={12} />
+                        <span suppressHydrationWarning>
+                          Last run: {new Date(latestDryRun.ended_at || latestDryRun.started_at).toLocaleString()}
+                          {' · '}
+                          Status: <strong style={{ 
+                            color: latestDryRun.status === 'completed' ? 'var(--green)' : 
+                                   latestDryRun.status === 'failed' ? 'var(--red)' : 
+                                   'var(--text-muted)'
+                          }}>
+                            {latestDryRun.status}
+                          </strong>
+                          {latestDryRun.duration_seconds !== null && (
+                            <> · Duration: {latestDryRun.duration_seconds}s</>
+                          )}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+
+                {/* Tool Execution Card - show when there are tool executions */}
+                {toolExecutions.length > 0 && (
+                  <div style={{ marginTop: 20 }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                      Tool Execution
+                    </div>
+                    <div
+                      className="output-panel"
+                      style={{
+                        maxHeight: 300,
+                        overflowY: 'auto',
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                        lineHeight: 1.6,
+                      }}
+                    >
+                      {toolExecutions.map((tool, idx) => (
+                        <div 
+                          key={idx}
+                          style={{ 
+                            padding: '8px 0',
+                            borderBottom: idx < toolExecutions.length - 1 ? '1px solid var(--border-subtle)' : 'none'
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                            <span style={{ 
+                              color: tool.status === 'running' ? 'var(--accent)' : 
+                                     tool.status === 'completed' ? 'var(--green)' : 
+                                     'var(--red)',
+                              fontWeight: 600,
+                              minWidth: 70
+                            }}>
+                              {tool.status === 'running' && '⟳ Running'}
+                              {tool.status === 'completed' && '✓ Done'}
+                              {tool.status === 'failed' && '✗ Failed'}
+                            </span>
+                            <span style={{ flex: 1, color: 'var(--text-primary)', fontWeight: 500 }}>
+                              {tool.name}
+                            </span>
+                            {tool.duration !== undefined && (
+                              <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+                                {tool.duration}ms
+                              </span>
+                            )}
+                            {tool.outputSize && (
+                              <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+                                {tool.outputSize}
+                              </span>
+                            )}
+                          </div>
+                          {tool.args && (
+                            <div style={{ 
+                              marginLeft: 78, 
+                              fontSize: 11, 
+                              color: 'var(--text-muted)',
+                              marginTop: 4,
+                              background: 'var(--bg-elevated)',
+                              padding: '4px 8px',
+                              borderRadius: 4,
+                              fontFamily: 'monospace',
+                              wordBreak: 'break-all',
+                              maxHeight: '100px',
+                              overflowY: 'auto'
+                            }}>
+                              <span style={{ color: 'var(--accent)' }}>args:</span> {typeof tool.args === 'string' ? tool.args : JSON.stringify(tool.args, null, 2)}
+                            </div>
+                          )}
+                          {tool.output && (
+                            <div style={{ 
+                              marginLeft: 78, 
+                              fontSize: 11, 
+                              color: 'var(--text-secondary)',
+                              marginTop: 4,
+                              background: 'var(--bg-elevated)',
+                              padding: '4px 8px',
+                              borderRadius: 4,
+                              fontFamily: 'monospace',
+                              whiteSpace: 'pre-wrap',
+                              wordBreak: 'break-all',
+                              maxHeight: '150px',
+                              overflowY: 'auto'
+                            }}>
+                              <span style={{ color: 'var(--green)' }}>output:</span> {typeof tool.output === 'string' ? tool.output : JSON.stringify(tool.output, null, 2)}
+                            </div>
+                          )}
+                          {tool.error && (
+                            <div style={{ 
+                              marginLeft: 78, 
+                              fontSize: 11, 
+                              color: 'var(--red)',
+                              marginTop: 4,
+                              background: 'rgba(239, 68, 68, 0.1)',
+                              padding: '4px 8px',
+                              borderRadius: 4,
+                              fontFamily: 'monospace',
+                              whiteSpace: 'pre-wrap',
+                              wordBreak: 'break-all',
+                              maxHeight: '150px',
+                              overflowY: 'auto'
+                            }}>
+                              <span style={{ fontWeight: 'bold' }}>Error:</span> {tool.error}
+                            </div>
+                          )}
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}
