@@ -7,15 +7,13 @@ import { logger } from './utils/logger.js';
 import { v4 as uuidv4 } from 'uuid';
 
 import agentsRouter      from './routes/agents.js';
-import toolsRouter       from './routes/tools.js';
+import toolsRouter       from './routes/tools.js';   // also serves /api/fs and /api/settings
 import tasksRouter       from './routes/tasks.js';
 import taskRunsRouter    from './routes/task-runs.js';
 import schedulesRouter   from './routes/schedules.js';
 import historyRouter     from './routes/history.js';
 import llmSettingsRouter from './routes/llm-settings.js';
-import fsRouter          from './routes/fs.js';
 import dashboardRouter   from './routes/dashboard.js';
-import settingsRouter    from './routes/settings.js';
 import { ToolRegistry }  from './engine/ToolRegistry.js';
 import { schedulerService } from './engine/SchedulerService.js';
 
@@ -52,14 +50,12 @@ app.get('/health', (_req, res) => res.json({ status: 'ok', ts: new Date().toISOS
 // ─── Routes ───────────────────────────────────────────────────────────────────
 app.use('/api/dashboard',     dashboardRouter);
 app.use('/api/agents',        agentsRouter);
-app.use('/api/tools',         toolsRouter);
+app.use('/api',               toolsRouter);   // handles /api/tools, /api/fs, /api/settings
 app.use('/api/tasks',         tasksRouter);
 app.use('/api/task-runs',     taskRunsRouter);
 app.use('/api/schedules',     schedulesRouter);
 app.use('/api/history',       historyRouter);
 app.use('/api/llm-settings',  llmSettingsRouter);
-app.use('/api/fs',            fsRouter);
-app.use('/api/settings',      settingsRouter);
 
 // ─── 404 ──────────────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
