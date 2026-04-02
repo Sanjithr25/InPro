@@ -126,4 +126,69 @@ router.delete('/:id', handle(async (req, res) => {
   res.json({ data: { deleted: true } });
 }));
 
+// ─── GET /api/history/:id/stream ──────────────────────────────────────────────
+// SSE streaming endpoint for real-time run output
+router.get('/:id/stream', (req: Request, res: Response) => {
+  const runId = req.params.id;
+  
+  // Set SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  const send = (event: string, data: unknown) => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  // Send initial connection event
+  send('connected', { runId });
+
+  // Poll for updates every 500ms
+  const interval = setInterval(async () => {
+    try {
+      const { rows } = await pool.query(
+        `SELECT status, output_data, error_message FROM execution_runs WHERE id = $1`,
+        [runId]
+      );
+
+      if (rows.length === 0) {
+        send('error', { message: 'Run not found' });
+        clearInterval(interval);
+        res.end();
+        return;
+      }
+
+      const run = rows[0];
+      
+      // Send current status
+      send('status', { status: run.status });
+
+      // If completed or failed, send final data and close
+      if (run.status === 'completed' || run.status === 'failed') {
+        if (run.output_data) {
+          send('output', run.output_data);
+        }
+        if (run.error_message) {
+          send('error', { message: run.error_message });
+        }
+        send('done', { status: run.status });
+        clearInterval(interval);
+        res.end();
+      }
+    } catch (err: any) {
+      send('error', { message: err.message });
+      clearInterval(interval);
+      res.end();
+    }
+  }, 500);
+
+  // Cleanup on client disconnect
+  req.on('close', () => {
+    clearInterval(interval);
+    res.end();
+  });
+});
+
 export default router;

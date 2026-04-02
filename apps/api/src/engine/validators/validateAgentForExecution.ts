@@ -66,7 +66,7 @@ export async function validateAgentForExecution(
 
   // ── 1. Agent Exists ────────────────────────────────────────────────────────
   const agentRes = await db.query(
-    `SELECT id, name, skill, llm_provider_id, max_turns, timeout_ms, temperature 
+    `SELECT id, name, skill, llm_provider_id 
      FROM agents WHERE id = $1`,
     [agentId]
   );
@@ -89,7 +89,7 @@ export async function validateAgentForExecution(
   if (agentRow.llm_provider_id) {
     // Agent has pinned provider
     const providerRes = await db.query(
-      `SELECT id, provider, api_key, model_name, base_url 
+      `SELECT id, provider, api_key, model_name, base_url, max_turns, timeout_ms, temperature 
        FROM llm_settings WHERE id = $1`,
       [agentRow.llm_provider_id]
     );
@@ -107,7 +107,7 @@ export async function validateAgentForExecution(
   } else {
     // No pinned provider - check for default
     const defaultRes = await db.query(
-      `SELECT id, provider, api_key, model_name, base_url 
+      `SELECT id, provider, api_key, model_name, base_url, max_turns, timeout_ms, temperature 
        FROM llm_settings WHERE is_default = true LIMIT 1`
     );
 
@@ -199,9 +199,9 @@ export async function validateAgentForExecution(
   }
 
   // ── 5. Constraints Validation ──────────────────────────────────────────────
-  const maxTurns = agentRow.max_turns ?? SystemConfig.get<number>('agent.maxTurns', 15);
-  const timeoutMs = agentRow.timeout_ms ?? SystemConfig.get<number | null>('agent.defaultTimeout', null);
-  const temperature = agentRow.temperature ?? SystemConfig.get<number | null>('agent.defaultTemperature', null);
+  const maxTurns = providerRow?.max_turns ?? SystemConfig.get<number>('agent.maxTurns', 15);
+  const timeoutMs = providerRow?.timeout_ms ?? SystemConfig.get<number | null>('agent.defaultTimeout', null);
+  const temperature = providerRow?.temperature ?? SystemConfig.get<number | null>('agent.defaultTemperature', null);
 
   if (maxTurns <= 0) {
     errors.push({

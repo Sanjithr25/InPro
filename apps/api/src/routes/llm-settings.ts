@@ -12,7 +12,7 @@ const handle = (fn: (req: Request, res: Response) => Promise<void>) =>
 // GET /api/llm-settings
 router.get('/', handle(async (_req, res) => {
   const { rows } = await pool.query(
-    `SELECT id, provider, base_url, model_name, is_default, extra_params, updated_at,
+    `SELECT id, provider, base_url, model_name, is_default, extra_params, max_turns, timeout_ms, temperature, updated_at,
             CASE WHEN api_key = '' THEN false ELSE true END AS has_key
      FROM llm_settings ORDER BY is_default DESC, provider`
   );
@@ -25,6 +25,9 @@ const UpdateSettingSchema = z.object({
   model_name:   z.string().optional(),
   is_default:   z.boolean().optional(),
   extra_params: z.record(z.unknown()).optional(),
+  max_turns:    z.number().int().positive().optional(),
+  timeout_ms:   z.number().int().nonnegative().optional(),
+  temperature:  z.number().min(0).max(2).optional(),
 });
 
 // PUT /api/llm-settings/:id
@@ -63,12 +66,15 @@ const CreateSettingSchema = z.object({
   model_name:   z.string().min(1),
   is_default:   z.boolean().default(false),
   extra_params: z.record(z.unknown()).default({}),
+  max_turns:    z.number().int().positive().optional(),
+  timeout_ms:   z.number().int().nonnegative().optional(),
+  temperature:  z.number().min(0).max(2).optional(),
 });
 
 router.post('/', handle(async (req, res) => {
   const parsed = CreateSettingSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.flatten() }); return; }
-  const { provider, api_key, base_url, model_name, is_default, extra_params } = parsed.data;
+  const { provider, api_key, base_url, model_name, is_default, extra_params, max_turns, timeout_ms, temperature } = parsed.data;
 
   if (is_default) {
     await pool.query(`UPDATE llm_settings SET is_default = false WHERE is_default = true`);
@@ -76,9 +82,9 @@ router.post('/', handle(async (req, res) => {
 
   const id = uuidv4();
   await pool.query(
-    `INSERT INTO llm_settings (id, provider, api_key, base_url, model_name, is_default, extra_params)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-    [id, provider, api_key, base_url ?? null, model_name, is_default, JSON.stringify(extra_params)]
+    `INSERT INTO llm_settings (id, provider, api_key, base_url, model_name, is_default, extra_params, max_turns, timeout_ms, temperature)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [id, provider, api_key, base_url ?? null, model_name, is_default, JSON.stringify(extra_params), max_turns ?? null, timeout_ms ?? null, temperature ?? null]
   );
   res.status(201).json({ data: { id } });
 }));

@@ -15,6 +15,7 @@ import historyRouter     from './routes/history.js';
 import llmSettingsRouter from './routes/llm-settings.js';
 import fsRouter          from './routes/fs.js';
 import dashboardRouter   from './routes/dashboard.js';
+import settingsRouter    from './routes/settings.js';
 import { ToolRegistry }  from './engine/ToolRegistry.js';
 import { schedulerService } from './engine/SchedulerService.js';
 
@@ -58,6 +59,7 @@ app.use('/api/schedules',     schedulesRouter);
 app.use('/api/history',       historyRouter);
 app.use('/api/llm-settings',  llmSettingsRouter);
 app.use('/api/fs',            fsRouter);
+app.use('/api/settings',      settingsRouter);
 
 // ─── 404 ──────────────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ error: 'Not found' }));

@@ -16,9 +16,24 @@ CREATE TABLE IF NOT EXISTS llm_settings (
   model_name   TEXT NOT NULL,
   is_default   BOOLEAN NOT NULL DEFAULT false,
   extra_params JSONB NOT NULL DEFAULT '{}',
+  max_turns    INTEGER CHECK (max_turns IS NULL OR max_turns > 0),
+  timeout_ms   INTEGER CHECK (timeout_ms IS NULL OR timeout_ms >= 0),
+  temperature  REAL CHECK (temperature IS NULL OR (temperature >= 0 AND temperature <= 2)),
   created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- ─── Global Settings ──────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS global_settings (
+  setting_key   TEXT PRIMARY KEY,
+  setting_value JSONB NOT NULL DEFAULT '{}',
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Seed defaults
+INSERT INTO global_settings (setting_key, setting_value)
+VALUES ('root_directory', '"C:\\"')
+ON CONFLICT DO NOTHING;
 
 -- Only one provider can be default at a time (partial unique index)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_settings_default
@@ -31,9 +46,6 @@ CREATE TABLE IF NOT EXISTS agents (
   skill            TEXT NOT NULL DEFAULT '',    -- System prompt / .md skill text
   llm_provider_id  UUID REFERENCES llm_settings(id) ON DELETE SET NULL,
   agent_group      TEXT NOT NULL DEFAULT '',    -- Group multiple agents
-  max_turns        INTEGER CHECK (max_turns IS NULL OR max_turns > 0),
-  timeout_ms       INTEGER CHECK (timeout_ms IS NULL OR timeout_ms >= 0),
-  temperature      REAL CHECK (temperature IS NULL OR (temperature >= 0 AND temperature <= 2)),
   created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -49,7 +61,7 @@ CREATE TABLE IF NOT EXISTS tools (
   config      JSONB NOT NULL DEFAULT '{}',   -- Encrypted k/v (API keys etc.)
   tool_group  TEXT NOT NULL DEFAULT 'General',
   is_enabled  BOOLEAN NOT NULL DEFAULT true,
-  risk_level  TEXT NOT NULL DEFAULT 'low' CHECK (risk_level IN ('low','medium','high')),
+  risk_level  TEXT NOT NULL DEFAULT 'low' CHECK (risk_level IN ('low','high')),
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

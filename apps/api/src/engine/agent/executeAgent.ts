@@ -29,7 +29,18 @@ export interface ExecuteAgentOptions {
   isDryRun?: boolean;
   abortSignal?: AbortSignal;
   mode?: 'sync' | 'stream';
+  onStream?: (event: StreamEvent) => void;
 }
+
+export type StreamEvent =
+  | { type: 'validation'; data: { status: 'passed' | 'failed'; provider?: string; model?: string; errors?: Array<{ field: string; message: string }> } }
+  | { type: 'start'; data: { agentName: string; provider: string; model: string } }
+  | { type: 'turn'; data: { turn: number; maxTurns: number } }
+  | { type: 'text'; data: { delta: string } }
+  | { type: 'tool_start'; data: { name: string; arguments: Record<string, unknown> } }
+  | { type: 'tool_result'; data: { name: string; result: Record<string, unknown>; duration: number } }
+  | { type: 'done'; data: ExecutionSuccess }
+  | { type: 'error'; data: { message: string; type: string } };
 
 export interface ExecutionError {
   type: 'validation' | 'execution' | 'tool' | 'system';
@@ -75,7 +86,7 @@ const MAX_GLOBAL_STEPS = 100; // Hard limit on total steps across all turns
 export async function executeAgent(
   options: ExecuteAgentOptions
 ): Promise<ExecutionResult> {
-  const { agentId, prompt, isDryRun = false, abortSignal, parentRunId = null } = options;
+  const { agentId, prompt, isDryRun = false, abortSignal, parentRunId = null, onStream } = options;
   const startTime = Date.now();
   
   // Generate or use provided runId
@@ -83,12 +94,14 @@ export async function executeAgent(
 
   try {
     // ── STEP 1: VALIDATE (BLOCK EARLY) ──────────────────────────────────────
-    console.log(`[executeAgent] Validating agent ${agentId} for execution...`);
+    logger.agentValidation(agentId, true);
     const validation = await validateAgentForExecution(agentId);
 
     if (!validation.valid) {
       const errorMessage = validation.errors.map(e => `${e.field}: ${e.message}`).join('; ');
-      console.error(`[executeAgent] Validation failed:`, validation.errors);
+      logger.agentValidation(agentId, false, validation.errors);
+      
+      onStream?.({ type: 'validation', data: { status: 'failed', errors: validation.errors } });
 
       // Create failed run record
       await db.query(
@@ -111,7 +124,16 @@ export async function executeAgent(
     }
 
     const config = validation.config;
-    console.log(`[executeAgent] Validation passed. Provider: ${config.provider.provider}, Model: ${config.provider.model}`);
+    logger.agentValidation(agentId, true);
+    
+    onStream?.({ 
+      type: 'validation', 
+      data: { 
+        status: 'passed', 
+        provider: config.provider.provider, 
+        model: config.provider.model 
+      } 
+    });
 
     // ── STEP 2: CREATE RUN RECORD ───────────────────────────────────────────
     await db.query(
@@ -122,9 +144,18 @@ export async function executeAgent(
     );
 
     logger.agentStart(config.agent.name, agentId, runId, parentRunId || null);
+    
+    onStream?.({ 
+      type: 'start', 
+      data: { 
+        agentName: config.agent.name, 
+        provider: config.provider.provider, 
+        model: config.provider.model 
+      } 
+    });
 
     // ── STEP 3: EXECUTE AGENT ────────────────────────────────────────────────
-    const result = await executeAgentLoop(config, prompt, runId, isDryRun, abortSignal);
+    const result = await executeAgentLoop(config, prompt, runId, isDryRun, abortSignal, onStream);
 
     // ── STEP 4: PERSIST RESULT ───────────────────────────────────────────────
     const executionDuration = Date.now() - startTime;
@@ -148,7 +179,29 @@ export async function executeAgent(
         logger.agentEnd(config.agent.name, agentId, runId, false, executionDuration);
       }
 
-      return { ...result, runId, executionDuration };
+      const finalResult = { ...result, runId, executionDuration };
+      onStream?.({ type: 'done', data: finalResult });
+      
+      if (isDryRun) {
+        logger.dryRunEnd(runId, agentId, true, executionDuration);
+        // Retention policy for dry runs
+        const { rows } = await db.query(
+          `SELECT id FROM execution_runs 
+           WHERE node_id = $1 AND is_dry_run = true 
+           ORDER BY created_at DESC OFFSET 3`,
+          [agentId]
+        );
+        if (rows.length > 0) {
+          const idsToDelete = rows.map(r => r.id);
+          await db.query(
+            `DELETE FROM execution_runs WHERE id = ANY($1)`,
+            [idsToDelete]
+          );
+          logger.dryRunRetention(agentId, rows.length, 3);
+        }
+      }
+      
+      return finalResult;
     } else {
       await db.query(
         `UPDATE execution_runs
@@ -162,10 +215,16 @@ export async function executeAgent(
         agentRunId: runId,
       });
 
+      onStream?.({ type: 'error', data: { message: result.error.message, type: result.error.type } });
+      
+      if (isDryRun) {
+        logger.dryRunEnd(runId, agentId, false, Date.now() - startTime);
+      }
+
       return { ...result, runId };
     }
   } catch (err: any) {
-    console.error(`[executeAgent] Unexpected error:`, err);
+    logger.error('Unexpected agent execution error', 'agent', err, { agentId, agentRunId: runId });
     
     await db.query(
       `UPDATE execution_runs
@@ -173,6 +232,8 @@ export async function executeAgent(
        WHERE id = $2`,
       [err.message, runId]
     );
+
+    onStream?.({ type: 'error', data: { message: err.message, type: 'system' } });
 
     return {
       success: false,
@@ -193,10 +254,18 @@ async function executeAgentLoop(
   prompt: string,
   runId: string,
   isDryRun: boolean,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  onStream?: (event: StreamEvent) => void
 ): Promise<ExecutionSuccess | ExecutionFailure> {
   try {
     // ── 1. Initialize LLM Provider ────────────────────────────────────────────
+    logger.llmInit(
+      config.provider.provider, 
+      config.provider.model, 
+      ['anthropic', 'ollama', 'llama-local'].includes(config.provider.provider) ? 'anthropic' : 'openai',
+      config.provider.baseUrl ?? undefined
+    );
+    
     const llm = LLMProviderFactory.create({
       provider: config.provider.provider,
       apiKey: config.provider.apiKey,
@@ -262,7 +331,8 @@ async function executeAgentLoop(
           break;
         }
 
-        console.log(`[executeAgent] Turn ${turn}/${config.agent.maxTurns} — calling LLM`);
+        logger.agentTurn(config.agent.name, runId, turn, config.agent.maxTurns);
+        onStream?.({ type: 'turn', data: { turn, maxTurns: config.agent.maxTurns } });
 
         // Build LLM options
         const llmOptions: any = { maxTokens: 4096, signal: abortSignal };
@@ -270,42 +340,56 @@ async function executeAgentLoop(
           llmOptions.temperature = config.agent.temperature;
         }
 
-        // Call LLM
-        const response = await llm.chat(messages, toolDefs, llmOptions);
+        // Use streaming API
+        let turnText = '';
+        const turnToolCalls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
+        let stopReason = 'end_turn';
+        let turnInputTokens = 0;
+        let turnOutputTokens = 0;
+
+        for await (const chunk of llm.chatStream(messages, toolDefs, llmOptions)) {
+          if (chunk.type === 'text') {
+            turnText += chunk.delta;
+            outputText += chunk.delta;
+            onStream?.({ type: 'text', data: { delta: chunk.delta } });
+          } else if (chunk.type === 'tool_call') {
+            turnToolCalls.push({ name: chunk.name, arguments: chunk.arguments });
+          } else if (chunk.type === 'done') {
+            stopReason = chunk.stopReason;
+            turnInputTokens = chunk.inputTokens;
+            turnOutputTokens = chunk.outputTokens;
+          }
+        }
 
         // Track tokens
-        if (response.inputTokens) {
-          tokenUsage.inputTokens += response.inputTokens;
-          tokenUsage.outputTokens += response.outputTokens;
-        }
-
-        // Collect text
-        if (response.content) {
-          outputText += response.content + '\n';
-        }
+        tokenUsage.inputTokens += turnInputTokens;
+        tokenUsage.outputTokens += turnOutputTokens;
 
         // No tool calls → done
-        if (response.stopReason === 'end_turn' || response.toolCalls.length === 0) {
+        if (stopReason === 'end_turn' || turnToolCalls.length === 0) {
           break;
         }
 
         // ── Tool Execution Round ──────────────────────────────────────────────
         messages.push({
           role: 'assistant',
-          content: response.content,
+          content: turnText,
         } as ChatMessage);
 
-        for (const tc of response.toolCalls) {
+        for (const tc of turnToolCalls) {
           totalSteps++;
           usedTools.push(tc.name);
-          console.log(`[executeAgent] Executing tool: ${tc.name}`, tc.arguments);
+          
+          const toolStartTime = Date.now();
+          logger.agentToolExecution(config.agent.name, runId, tc.name, tc.arguments);
+          onStream?.({ type: 'tool_start', data: { name: tc.name, arguments: tc.arguments } });
 
           let toolResult: Record<string, unknown>;
 
           // Loop detection
           const callFingerprint = `${tc.name}:${JSON.stringify(tc.arguments)}`;
           if (executionHistory.has(callFingerprint)) {
-            console.log(`[executeAgent] ⚠️ Loop detected for tool: ${tc.name}`);
+            logger.warn(`Loop detected for tool: ${tc.name}`, 'tool', { agentName: config.agent.name, agentRunId: runId });
             toolResult = {
               error: 'terminal',
               message: `[SYSTEM ALERT] You already executed this exact tool with identical arguments. Repeating the same action causes an infinite loop. You MUST change your approach, use different arguments, or end your turn.`,
@@ -318,6 +402,9 @@ async function executeAgentLoop(
               toolResult = { error: toolErr.message };
             }
           }
+          
+          const toolDuration = Date.now() - toolStartTime;
+          onStream?.({ type: 'tool_result', data: { name: tc.name, result: toolResult, duration: toolDuration } });
 
           // Feed result back
           messages.push({
@@ -356,7 +443,7 @@ async function executeAgentLoop(
       executionDuration: 0, // Will be set by caller
     };
   } catch (err: any) {
-    console.error(`[executeAgent] Loop execution error:`, err);
+    logger.error('Agent loop execution error', 'agent', err, { agentName: config.agent.name, agentRunId: runId });
     return {
       success: false,
       error: {

@@ -430,6 +430,44 @@ class StructuredLogger {
     });
   }
 
+  agentValidation(agentId: string, success: boolean, errors?: Array<{ field: string; message: string }>) {
+    this.log({
+      level: success ? 'INFO' : 'ERROR',
+      component: 'agent',
+      operation: 'execute',
+      message: `Validating agent ${agentId} for execution...`,
+      agentId,
+      success,
+      metadata: errors ? { errors } : undefined,
+    });
+  }
+
+  agentTurn(agentName: string, agentRunId: string, turn: number, maxTurns: number) {
+    this.log({
+      level: 'DEBUG',
+      component: 'agent',
+      operation: 'execute',
+      message: `Turn ${turn}/${maxTurns} — calling LLM`,
+      agentName,
+      agentRunId,
+      spanId: agentRunId,
+      metadata: { turn, maxTurns },
+    });
+  }
+
+  agentToolExecution(agentName: string, agentRunId: string, toolName: string, args: Record<string, unknown>) {
+    this.log({
+      level: 'DEBUG',
+      component: 'agent',
+      operation: 'execute',
+      message: `Executing tool: ${toolName}`,
+      agentName,
+      agentRunId,
+      spanId: agentRunId,
+      metadata: { toolName, args },
+    });
+  }
+
   // ─── LLM Calls ────────────────────────────────────────────────────────────
   llmCall(provider: string, model: string, inputTokens: number, outputTokens: number, duration: number, cost: number) {
     this.log({
@@ -458,6 +496,18 @@ class StructuredLogger {
       model,
       error,
       metadata: retryCount !== undefined ? { retryCount } : undefined,
+    });
+  }
+
+  llmInit(provider: string, model: string, wrapper: string, baseUrl?: string) {
+    this.log({
+      level: 'INFO',
+      component: 'llm',
+      operation: 'connect',
+      message: `Initializing ${wrapper.toUpperCase()} SDK wrapper for provider: ${provider}, model: ${model}${baseUrl ? ` (at ${baseUrl})` : ''}`,
+      provider,
+      model,
+      metadata: { wrapper, baseUrl },
     });
   }
 
@@ -554,6 +604,46 @@ class StructuredLogger {
       error: error instanceof Error ? error.message : error,
       errorStack: error instanceof Error ? error.stack?.split('\n').slice(0, 5).join('\n') : undefined,
       ...context,
+    });
+  }
+
+  // ─── Dry Run ──────────────────────────────────────────────────────────────
+  dryRunStart(runId: string, agentId: string) {
+    this.log({
+      level: 'INFO',
+      component: 'agent',
+      operation: 'start',
+      message: 'Dry Run Started',
+      agentRunId: runId,
+      agentId,
+      spanId: runId,
+      metadata: { isDryRun: true },
+    });
+  }
+
+  dryRunEnd(runId: string, agentId: string, success: boolean, duration: number) {
+    this.log({
+      level: 'INFO',
+      component: 'agent',
+      operation: 'end',
+      message: `Dry Run ${success ? 'Completed' : 'Failed'}`,
+      agentRunId: runId,
+      agentId,
+      spanId: runId,
+      success,
+      duration,
+      metadata: { isDryRun: true },
+    });
+  }
+
+  dryRunRetention(agentId: string, deletedCount: number, keptCount: number) {
+    this.log({
+      level: 'INFO',
+      component: 'agent',
+      operation: 'execute',
+      message: `Retention policy: deleted ${deletedCount} old dry runs for agent ${agentId} (keeping last ${keptCount})`,
+      agentId,
+      metadata: { deletedCount, keptCount, isDryRun: true },
     });
   }
 
