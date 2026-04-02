@@ -10,7 +10,7 @@ const handle = (fn: (req: Request, res: Response) => Promise<void>) =>
 // Only returns the strictly controlled inventory of tools.
 router.get('/', handle(async (_req, res) => {
   const { rows } = await pool.query(
-    `SELECT id, name, description, tool_group, risk_level, is_enabled FROM tools ORDER BY tool_group, name`
+    `SELECT id, name, description, tool_group, risk_level, is_enabled, schema FROM tools ORDER BY tool_group, name`
   );
   res.json({ data: rows });
 }));

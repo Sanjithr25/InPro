@@ -62,8 +62,11 @@ CREATE TABLE IF NOT EXISTS tools (
   tool_group  TEXT NOT NULL DEFAULT 'General',
   is_enabled  BOOLEAN NOT NULL DEFAULT true,
   risk_level  TEXT NOT NULL DEFAULT 'low' CHECK (risk_level IN ('low','high')),
+  setting_key TEXT REFERENCES global_settings(setting_key) ON DELETE SET NULL, -- linked global setting
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE INDEX IF NOT EXISTS idx_tools_setting_key ON tools(setting_key);
 
 -- ─── Agent ↔ Tool Join ────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS agent_tools (

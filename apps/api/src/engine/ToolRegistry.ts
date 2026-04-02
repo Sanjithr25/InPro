@@ -417,34 +417,37 @@ const EXECUTOR_MAP = new Map<string, Executor>(
 );
 
 // ─── ToolRegistry ──────────────────────────────────────────────────────────────
-
 export class ToolRegistry {
   static async seed(): Promise<void> {
     // We now have a fixed registry of tools.
     // Clean all tools that are not in the new inventory
+    // Check which tools are already in the DB
     const newToolNames = BUILT_IN_TOOLS.map(t => t.name);
-    
-    // Safety sync: clean any tool that isn't statically defined here
-    const { rows } = await db.query(`SELECT name FROM tools`);
-    for (const row of rows) {
-      if (!newToolNames.includes(row.name)) {
-        await db.query(`DELETE FROM tools WHERE name = $1`, [row.name]);
-      }
+    const { rows: existing } = await db.query(`SELECT name FROM tools WHERE name = ANY($1)`, [newToolNames]);
+    const existingNames = new Set(existing.map((r: { name: string }) => r.name));
+
+    const missing = BUILT_IN_TOOLS.filter(t => !existingNames.has(t.name));
+
+    if (missing.length === 0) {
+      console.log(`[ToolRegistry] All ${BUILT_IN_TOOLS.length} tools already seeded — skipping.`);
+      return;
     }
 
-    // Upsert exact tool definitions
-    for (const tool of BUILT_IN_TOOLS) {
+    console.log(`[ToolRegistry] Seeding ${missing.length} new tool(s): ${missing.map(t => t.name).join(', ')}`);
+
+    // Upsert tool definitions — only overwrite structural fields (schema, tool_group).
+    // User-customized fields (description, risk_level, is_enabled) are preserved on conflict.
+    for (const tool of missing) {
       await db.query(
         `INSERT INTO tools (name, description, schema, config, tool_group, is_enabled, risk_level)
          VALUES ($1, $2, $3, $4, $5, true, $6)
          ON CONFLICT (name) DO UPDATE SET
-            description = EXCLUDED.description,
             schema = EXCLUDED.schema,
-            tool_group = EXCLUDED.tool_group,
-            risk_level = EXCLUDED.risk_level`,
+            tool_group = EXCLUDED.tool_group`,
         [tool.name, tool.description, JSON.stringify(tool.schema), '{}', tool.group, tool.defaultRisk]
       );
     }
+
     console.log(`[ToolRegistry] Seeded ${BUILT_IN_TOOLS.length} controlled core tools.`);
   }
 

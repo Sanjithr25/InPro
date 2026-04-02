@@ -82,7 +82,7 @@ export type ToolRow = {
 
 export const toolsApi = {
   list: () => req<ToolRow[]>('/api/tools'),
-  update: (id: string, body: { is_enabled?: boolean, risk_level?: 'low' | 'high' }) =>
+  update: (id: string, body: { is_enabled?: boolean, risk_level?: 'low' | 'high', description?: string }) =>
     req<{ updated: boolean }>(`/api/tools/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
 };
 
