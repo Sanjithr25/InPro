@@ -16,10 +16,10 @@ router.get('/', handle(async (_req, res) => {
 }));
 
 // ─── Validation ───────────────────────────────────────────────────────────────
-// Users can ONLY toggle enabled state and risk level.
 const ToolToggleSchema = z.object({
-  is_enabled: z.boolean().optional(),
-  risk_level: z.enum(['low', 'high']).optional(),
+  is_enabled:  z.boolean().optional(),
+  description: z.string().optional(),
+  risk_level:  z.enum(['low', 'high']).optional(),
 });
 
 // ─── PUT /api/tools/:id ──────────────────────────────────────────────────────
@@ -34,6 +34,10 @@ router.put('/:id', handle(async (req, res) => {
   if (parsed.data.is_enabled !== undefined) {
     sets.push(`is_enabled = $${i++}`);
     vals.push(parsed.data.is_enabled);
+  }
+  if (parsed.data.description !== undefined) {
+    sets.push(`description = $${i++}`);
+    vals.push(parsed.data.description);
   }
   if (parsed.data.risk_level !== undefined) {
     sets.push(`risk_level = $${i++}`);

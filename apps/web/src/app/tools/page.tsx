@@ -135,9 +135,25 @@ export default function ToolsPage() {
     load();
   };
 
-  const cycleRisk = async (id: string, current: string) => {
-    await toolsApi.update(id, { risk_level: current === 'low' ? 'high' : 'low' });
-    load();
+  const updateTool = async (id: string, patch: Partial<{ is_enabled: boolean, description: string, risk_level: 'low' | 'high' }>) => {
+    setSelected(prev => prev && prev.id === id ? { ...prev, ...patch } : prev);
+    setTools(ts => ts.map(t => t.id === id ? { ...t, ...patch } : t));
+    await toolsApi.update(id, patch);
+  };
+
+  const [saving, setSaving] = useState(false);
+  const saveAll = async () => {
+    if (!selected) return;
+    setSaving(true);
+    try {
+      await updateTool(selected.id, { 
+        is_enabled: selected.is_enabled, 
+        description: selected.description, 
+        risk_level: selected.risk_level 
+      });
+    } finally {
+      setSaving(false);
+    }
   };
 
   const updateRootDir = async (path: string) => {
@@ -268,10 +284,13 @@ export default function ToolsPage() {
                 <div className="page-subtitle">{selected.tool_group} capability</div>
               </div>
               <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                 <button className="btn btn-primary" onClick={saveAll} disabled={saving} style={{ padding: '6px 14px', fontSize: 13 }}>
+                   {saving ? <span className="spinner" /> : <ShieldCheck width={14} height={14} />} {saving ? 'Saving...' : 'Save Changes'}
+                 </button>
                  <div className="toggle-wrap">
                     <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{selected.is_enabled ? 'Active' : 'Disabled'}</span>
                     <label className="toggle">
-                        <input type="checkbox" checked={selected.is_enabled} onChange={() => toggleEnable(selected.id, selected.is_enabled)} />
+                        <input type="checkbox" checked={selected.is_enabled} onChange={() => updateTool(selected.id, { is_enabled: !selected.is_enabled })} />
                         <span className="toggle-track" />
                     </label>
                  </div>
@@ -280,40 +299,38 @@ export default function ToolsPage() {
 
             <div className="card">
               <div className="card-title">Description</div>
-              <p style={{ fontSize: 14, lineHeight: 1.6, color: 'var(--text-primary)' }}>{selected.description}</p>
+              <textarea 
+                className="form-textarea" 
+                value={selected.description}
+                onChange={(e) => setSelected({ ...selected, description: e.target.value })}
+                style={{ fontSize: 14, minHeight: 120, background: 'var(--bg-base)' }}
+              />
             </div>
 
             <div className="card">
-               <div className="card-title">Capability Risk Model</div>
-               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <button 
-                    onClick={() => cycleRisk(selected.id, selected.risk_level)}
-                    style={{
-                      background: selected.risk_level === 'high' ? 'rgba(239, 68, 68, 0.1)' : 'rgba(34, 197, 94, 0.1)',
-                      color: selected.risk_level === 'high' ? 'var(--red)' : 'var(--green)',
-                      padding: '8px 16px', borderRadius: 8, fontSize: 12, fontWeight: 700, border: 'none', cursor: 'pointer',
-                      display: 'flex', alignItems: 'center', gap: 8
+               <div className="card-title">Capability Risk Level</div>
+               <div className="form-group" style={{ marginBottom: 0 }}>
+                  <select 
+                    className="form-select"
+                    value={selected.risk_level}
+                    onChange={(e) => updateTool(selected.id, { risk_level: e.target.value as 'low' | 'high' })}
+                    style={{ 
+                        maxWidth: 200, 
+                        fontWeight: 600,
+                        color: selected.risk_level === 'high' ? 'var(--red)' : 'var(--green)',
+                        background: selected.risk_level === 'high' ? 'rgba(239, 68, 68, 0.05)' : 'rgba(34, 197, 94, 0.05)',
+                        borderColor: selected.risk_level === 'high' ? 'rgba(239, 68, 68, 0.2)' : 'rgba(34, 197, 94, 0.2)'
                     }}
                   >
-                    {selected.risk_level === 'high' ? <ShieldAlert width={14} height={14} /> : <ShieldCheck width={14} height={14} />}
-                    {selected.risk_level.toUpperCase()} RISK
-                  </button>
-                  <p style={{ fontSize: 12, color: 'var(--text-muted)', flex: 1 }}>
+                    <option value="low">Low Risk</option>
+                    <option value="high">High Risk</option>
+                  </select>
+                  <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 12 }}>
                     {selected.risk_level === 'high' 
-                      ? 'This tool can modify files or execute system code.' 
-                      : 'This tool primarily performs passive searches or reads data.'}
+                      ? 'High-risk tools can modify files or execute system code and are blocked during dry runs.' 
+                      : 'Low-risk tools primarily perform passive searches or read data.'}
                   </p>
                </div>
-            </div>
-
-            <div className="card" style={{ background: 'var(--bg-base)' }}>
-              <div className="card-title" style={{ fontSize: 13, opacity: 0.8 }}>LLM Schema Definition</div>
-              <pre style={{ 
-                fontSize: 12, fontFamily: 'monospace', color: 'var(--text-secondary)', 
-                overflowX: 'auto', padding: 12, background: 'rgba(0,0,0,0.2)', borderRadius: 8 
-              }}>
-                {JSON.stringify(selected.schema, null, 2)}
-              </pre>
             </div>
           </div>
         )}
