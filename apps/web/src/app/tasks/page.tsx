@@ -63,7 +63,7 @@ export default function TasksPage() {
     setSelected(full);
     const steps = Array.isArray(full.workflow_definition) ? full.workflow_definition : [];
     setForm({ name: full.name, description: full.description, llm_provider_id: full.llm_provider_id, workflow_definition: steps, entries: steps });
-    setGenAgentIds(steps.map(s => s.agentId));
+    setGenAgentIds(full.agent_ids?.length ? full.agent_ids : Array.from(new Set(steps.map(s => s.agentId))));
     setIsNew(false);
   };
 
@@ -84,6 +84,7 @@ export default function TasksPage() {
         description: form.description,
         workflow_definition: form.entries,
         llm_provider_id: form.llm_provider_id ?? null,
+        agent_ids: genAgentIds,
       };
       if (isNew) {
         const { id } = await tasksApi.create(payload);
@@ -96,7 +97,15 @@ export default function TasksPage() {
         await load();
         const refreshed = await tasksApi.get(selected.id);
         const steps = Array.isArray(refreshed.workflow_definition) ? refreshed.workflow_definition : [];
-        setForm(f => ({ ...f, entries: steps, workflow_definition: steps }));
+        setForm(f => ({
+          ...f,
+          name: refreshed.name,
+          description: refreshed.description,
+          llm_provider_id: refreshed.llm_provider_id,
+          entries: steps,
+          workflow_definition: steps
+        }));
+        setGenAgentIds(refreshed.agent_ids?.length ? refreshed.agent_ids : Array.from(new Set(steps.map(s => s.agentId))));
         setSelected(refreshed);
         setSavedFeedback(true);
         setTimeout(() => setSavedFeedback(false), 2000);
@@ -138,6 +147,7 @@ export default function TasksPage() {
       await tasksApi.update(selected.id, {
         name: form.name, description: form.description,
         workflow_definition: form.entries, llm_provider_id: form.llm_provider_id ?? null,
+        agent_ids: genAgentIds,
       });
       const result = await tasksApi.dryRun(selected.id, dryRunPrompt);
       setDryRunResult(result);

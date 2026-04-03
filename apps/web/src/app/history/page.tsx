@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import {
   Loader2, Trash2, ChevronDown, ChevronRight,
   CheckCircle2, XCircle, Clock, Bot, Timer, RefreshCw,
-  BarChart3, Zap, History, Filter, Calendar, AlarmClock, Search, X,
+  BarChart3, Zap, History, Filter, Calendar, AlarmClock, Search, X, Copy, Eye,
 } from 'lucide-react';
 import { historyApi, type HistoryRunRow, type HistoryRunDetail } from '@/lib/api';
 
@@ -383,6 +383,7 @@ export default function HistoryPage() {
   const [typeFilter, setTypeFilter]     = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setIsRefreshing(true);
@@ -404,6 +405,12 @@ export default function HistoryPage() {
     if (detailId === id) setDetailId(null);
   };
 
+  const copyId = (id: string) => {
+    navigator.clipboard.writeText(id);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
   const filtered = runs.filter(r =>
     (statusFilter === 'all' || r.status === statusFilter) &&
     (typeFilter   === 'all' || r.node_type === typeFilter) &&
@@ -411,6 +418,8 @@ export default function HistoryPage() {
   );
 
   const total     = runs.length;
+  const taskRuns  = runs.filter(r => r.node_type === 'task').length;
+  const scheduleRuns = runs.filter(r => r.node_type === 'schedule').length;
   const completed = runs.filter(r => r.status === 'completed').length;
   const failed    = runs.filter(r => r.status === 'failed').length;
   const running   = runs.filter(r => r.status === 'running').length;
@@ -485,12 +494,14 @@ export default function HistoryPage() {
       </div>
 
       {/* Stats */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', gap: 14 }}>
         {[
-          { label: 'Total Runs',  value: total,     color: 'var(--text-primary)', icon: <BarChart3 width={16} height={16} /> },
-          { label: 'Completed',   value: completed, color: 'var(--green)',         icon: <CheckCircle2 width={16} height={16} /> },
-          { label: 'Failed',      value: failed,    color: 'var(--red)',           icon: <XCircle width={16} height={16} /> },
-          { label: 'Running Now', value: running,   color: 'var(--accent-hover)',  icon: <Zap width={16} height={16} /> },
+          { label: 'Total Runs',    value: total,        color: 'var(--text-primary)', icon: <BarChart3 width={16} height={16} /> },
+          { label: 'Task Runs',     value: taskRuns,     color: 'var(--text-primary)', icon: <Bot width={16} height={16} /> },
+          { label: 'Schedule Runs', value: scheduleRuns, color: 'var(--text-primary)', icon: <AlarmClock width={16} height={16} /> },
+          { label: 'Completed',     value: completed,    color: 'var(--green)',        icon: <CheckCircle2 width={16} height={16} /> },
+          { label: 'Failed',        value: failed,       color: 'var(--red)',          icon: <XCircle width={16} height={16} /> },
+          { label: 'Running Now',   value: running,      color: 'var(--accent-hover)', icon: <Zap width={16} height={16} /> },
         ].map(s => (
           <div key={s.label} className="card" style={{
             padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 14, marginBottom: 0
@@ -577,11 +588,20 @@ export default function HistoryPage() {
       {/* Table */}
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
         <div style={{
-          display: 'grid', gridTemplateColumns: '2fr 80px 100px 90px 110px 36px',
+          display: 'grid', 
+          gridTemplateColumns: '100px 2fr 80px 80px 80px 100px 90px 110px 90px',
           padding: '12px 20px', background: 'var(--bg-subtle)', borderBottom: '1px solid var(--border)',
           fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', gap: 12,
         }}>
-          <span>Source</span><span>Type</span><span>Status</span><span>Duration</span><span>Started</span><span />
+          <span>ID</span>
+          <span>Source / Name</span>
+          <span>Type</span>
+          <span style={{ textAlign: 'center' }}>Agents</span>
+          <span style={{ textAlign: 'center' }}>Tools</span>
+          <span>Status</span>
+          <span>Duration</span>
+          <span>Timestamp</span>
+          <span style={{ textAlign: 'center' }}>Actions</span>
         </div>
 
         {loading ? (
@@ -598,37 +618,101 @@ export default function HistoryPage() {
             <div
               key={run.id}
               style={{
-                display: 'grid', gridTemplateColumns: '2fr 80px 100px 90px 110px 36px',
+                display: 'grid', 
+                gridTemplateColumns: '100px 2fr 80px 80px 80px 100px 90px 110px 90px',
                 padding: '14px 20px', borderBottom: '1px solid var(--border)',
-                alignItems: 'center', gap: 12, cursor: 'pointer', transition: 'background 0.15s',
+                alignItems: 'center', gap: 12, transition: 'background 0.15s',
               }}
               onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-hover)')}
               onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-              onClick={() => setDetailId(run.id)}
             >
+              {/* ID with copy button */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontSize: 11, fontFamily: 'monospace', color: 'var(--text-muted)' }}>
+                  {run.id.substring(0, 6)}
+                </span>
+                <button
+                  className="btn-icon"
+                  style={{ padding: 4, background: 'none', border: 'none' }}
+                  onClick={() => copyId(run.id)}
+                  title="Copy full ID"
+                >
+                  {copiedId === run.id ? (
+                    <CheckCircle2 width={12} height={12} style={{ color: 'var(--green)' }} />
+                  ) : (
+                    <Copy width={12} height={12} style={{ color: 'var(--text-muted)' }} />
+                  )}
+                </button>
+              </div>
+
+              {/* Source/Name - clickable */}
               <div style={{ overflow: 'hidden' }}>
-                <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden' }}>
+                <a 
+                  href={run.node_type === 'task' ? `/tasks` : `/scheduler`}
+                  style={{ 
+                    fontSize: 13.5, 
+                    fontWeight: 600, 
+                    color: 'var(--text-primary)', 
+                    whiteSpace: 'nowrap', 
+                    textOverflow: 'ellipsis', 
+                    overflow: 'hidden',
+                    display: 'block',
+                    textDecoration: 'none',
+                    transition: 'color 0.15s'
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.color = 'var(--accent)'}
+                  onMouseLeave={e => e.currentTarget.style.color = 'var(--text-primary)'}
+                  onClick={e => e.stopPropagation()}
+                >
                   {run.source_name ?? <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>Manual Run</span>}
-                </div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
-                  {run.child_count} {run.node_type === 'schedule' ? 'task' : 'agent'}{run.child_count !== 1 ? 's' : ''}
-                </div>
+                </a>
               </div>
+
+              {/* Type */}
               <TypeBadge type={run.node_type} />
-              <div style={{ display: 'flex' }}>
-                 <StatusBadge status={run.status} />
+
+              {/* Agents Available */}
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', textAlign: 'center', fontWeight: 600 }}>
+                {run.agents_available}
               </div>
+
+              {/* Tools Available */}
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', textAlign: 'center', fontWeight: 600 }}>
+                {run.tools_available}
+              </div>
+
+              {/* Status */}
+              <div style={{ display: 'flex' }}>
+                <StatusBadge status={run.status} />
+              </div>
+
+              {/* Duration */}
               <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
                 <Timer width={12} height={12} /> {fmtDuration(run.duration_seconds)}
               </div>
+
+              {/* Timestamp */}
               <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{timeAgo(run.started_at)}</div>
-              <button
-                className="btn-icon" style={{ padding: 6, background: 'none' }}
-                onClick={e => { e.stopPropagation(); handleDelete(run.id); }}
-                title="Delete run"
-              >
-                <Trash2 width={13} height={13} />
-              </button>
+
+              {/* Actions - View Logs and Delete */}
+              <div style={{ display: 'flex', gap: 6, justifyContent: 'center' }}>
+                <button
+                  className="btn-icon" 
+                  style={{ padding: 6, background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
+                  onClick={() => setDetailId(run.id)}
+                  title="View logs"
+                >
+                  <Eye width={13} height={13} />
+                </button>
+                <button
+                  className="btn-icon" 
+                  style={{ padding: 6, background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--red)' }}
+                  onClick={e => { e.stopPropagation(); handleDelete(run.id); }}
+                  title="Delete run"
+                >
+                  <Trash2 width={13} height={13} />
+                </button>
+              </div>
             </div>
           ))
         )}

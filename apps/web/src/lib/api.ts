@@ -106,6 +106,7 @@ export type TaskRow = {
   description: string;
   llm_provider_id?: string | null;
   workflow_definition: WorkflowStep[];
+  agent_ids?: string[];
   step_count?: number;
   last_run_status?: 'pending' | 'running' | 'completed' | 'failed' | null;
   last_run_at?: string | null;
@@ -116,9 +117,9 @@ export type TaskRow = {
 export const tasksApi = {
   list: () => req<TaskRow[]>('/api/tasks'),
   get:  (id: string) => req<TaskRow>(`/api/tasks/${id}`),
-  create: (body: Pick<TaskRow, 'name' | 'description' | 'workflow_definition' | 'llm_provider_id'>) =>
+  create: (body: Pick<TaskRow, 'name' | 'description' | 'workflow_definition' | 'llm_provider_id' | 'agent_ids'>) =>
     req<{ id: string }>('/api/tasks', { method: 'POST', body: JSON.stringify(body) }),
-  update: (id: string, body: Partial<Pick<TaskRow, 'name' | 'description' | 'workflow_definition' | 'llm_provider_id'>>) =>
+  update: (id: string, body: Partial<Pick<TaskRow, 'name' | 'description' | 'workflow_definition' | 'llm_provider_id' | 'agent_ids'>>) =>
     req<{ updated: boolean }>(`/api/tasks/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   delete: (id: string) =>
     req<{ deleted: boolean }>(`/api/tasks/${id}`, { method: 'DELETE' }),
@@ -273,6 +274,10 @@ export type HistoryRunRow = {
   duration_seconds: number | null;
   created_at: string;
   child_count: number;
+  agent_calls: number;
+  tool_calls: number;
+  agents_available: number;
+  tools_available: number;
 };
 
 export type HistoryRunDetail = HistoryRunRow & {
