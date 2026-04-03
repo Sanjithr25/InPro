@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import {
   Loader2, Trash2, ChevronDown, ChevronRight,
   CheckCircle2, XCircle, Clock, Bot, Timer, RefreshCw,
-  BarChart3, Zap, History, Filter, Calendar, AlarmClock,
+  BarChart3, Zap, History, Filter, Calendar, AlarmClock, Search, X,
 } from 'lucide-react';
 import { historyApi, type HistoryRunRow, type HistoryRunDetail } from '@/lib/api';
 
@@ -381,11 +381,18 @@ export default function HistoryPage() {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [typeFilter, setTypeFilter]     = useState<string>('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const load = useCallback(async () => {
-    const r = await historyApi.list();
-    setRuns(r);
-    setLoading(false);
+    setIsRefreshing(true);
+    try {
+      const r = await historyApi.list();
+      setRuns(r);
+      setLoading(false);
+    } finally {
+      setIsRefreshing(false);
+    }
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -399,7 +406,8 @@ export default function HistoryPage() {
 
   const filtered = runs.filter(r =>
     (statusFilter === 'all' || r.status === statusFilter) &&
-    (typeFilter   === 'all' || r.node_type === typeFilter)
+    (typeFilter   === 'all' || r.node_type === typeFilter) &&
+    (r.source_name?.toLowerCase().includes(searchQuery.toLowerCase()) || false)
   );
 
   const total     = runs.length;
@@ -416,9 +424,64 @@ export default function HistoryPage() {
           <div className="page-title">Run History</div>
           <div className="page-subtitle">All task and schedule executions — click any row for full details</div>
         </div>
-        <button className="btn btn-ghost" style={{ fontSize: 13 }} onClick={load}>
-          <RefreshCw width={14} height={14} /> Refresh
-        </button>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+          {/* Search Box */}
+          <div style={{ position: 'relative' }}>
+            <Search width={14} height={14} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }} />
+            <input
+              type="text"
+              placeholder="Search task or schedule…"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              style={{
+                paddingLeft: 36,
+                paddingRight: searchQuery ? 36 : 12,
+                paddingTop: 8,
+                paddingBottom: 8,
+                width: 240,
+                fontSize: 12,
+                background: 'var(--bg-elevated)',
+                border: '1px solid var(--border)',
+                borderRadius: 8,
+                color: 'var(--text-primary)',
+              }}
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                style={{
+                  position: 'absolute',
+                  right: 8,
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  color: 'var(--text-muted)',
+                  padding: 4,
+                }}
+              >
+                <X width={14} height={14} />
+              </button>
+            )}
+          </div>
+          <button 
+            className="btn btn-ghost" 
+            style={{ fontSize: 13 }} 
+            onClick={load}
+            disabled={isRefreshing}
+          >
+            <RefreshCw 
+              width={14} 
+              height={14} 
+              style={{ 
+                transition: 'transform 0.6s ease-in-out',
+                transform: isRefreshing ? 'rotate(360deg)' : 'rotate(0deg)',
+              }} 
+            /> 
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Stats */}
@@ -442,25 +505,69 @@ export default function HistoryPage() {
       </div>
 
       {/* Filters */}
-      <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          <Filter width={13} height={13} style={{ color: 'var(--text-muted)' }} />
-          {['all', 'completed', 'failed', 'running', 'pending'].map(s => (
-            <button key={s} type="button" 
-              className={`type-pill ${statusFilter === s ? 'select' : ''}`}
-              style={{ fontSize: 11, height: 'auto', padding: '4px 12px' }}
-              onClick={() => setStatusFilter(s)}>
+      <div style={{ display: 'flex', gap: 20, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 0, alignItems: 'center', background: 'var(--bg-elevated)', borderRadius: 14, padding: 4, border: '1px solid var(--border)' }}>
+          {['all', 'completed', 'failed', 'running'].map((s, idx) => (
+            <button 
+              key={s} 
+              type="button" 
+              style={{ 
+                fontSize: 12, 
+                padding: '6px 16px',
+                fontWeight: 600,
+                borderRadius: 10,
+                border: 'none',
+                background: statusFilter === s ? 'var(--bg-surface)' : 'transparent',
+                color: statusFilter === s ? 'var(--text-primary)' : 'var(--text-muted)',
+                transition: 'all 150ms ease',
+                cursor: 'pointer',
+                boxShadow: statusFilter === s ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+              }}
+              onClick={() => setStatusFilter(s)}
+              onMouseEnter={e => {
+                if (statusFilter !== s) {
+                  e.currentTarget.style.color = 'var(--text-primary)';
+                }
+              }}
+              onMouseLeave={e => {
+                if (statusFilter !== s) {
+                  e.currentTarget.style.color = 'var(--text-muted)';
+                }
+              }}
+            >
               {s.charAt(0).toUpperCase() + s.slice(1)}
             </button>
           ))}
         </div>
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          <Calendar width={13} height={13} style={{ color: 'var(--text-muted)' }} />
-          {['all', 'task', 'schedule'].map(t => (
-            <button key={t} type="button" 
-              className={`type-pill ${typeFilter === t ? 'select' : ''}`}
-              style={{ fontSize: 11, height: 'auto', padding: '4px 12px', borderColor: typeFilter === t ? 'var(--accent)' : 'var(--border)' }}
-              onClick={() => setTypeFilter(t)}>
+        <div style={{ display: 'flex', gap: 0, alignItems: 'center', background: 'var(--bg-elevated)', borderRadius: 14, padding: 4, border: '1px solid var(--border)' }}>
+          {['all', 'task', 'schedule'].map((t, idx) => (
+            <button 
+              key={t} 
+              type="button" 
+              style={{ 
+                fontSize: 12, 
+                padding: '6px 16px',
+                fontWeight: 600,
+                borderRadius: 10,
+                border: 'none',
+                background: typeFilter === t ? 'var(--bg-surface)' : 'transparent',
+                color: typeFilter === t ? 'var(--text-primary)' : 'var(--text-muted)',
+                transition: 'all 150ms ease',
+                cursor: 'pointer',
+                boxShadow: typeFilter === t ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+              }}
+              onClick={() => setTypeFilter(t)}
+              onMouseEnter={e => {
+                if (typeFilter !== t) {
+                  e.currentTarget.style.color = 'var(--text-primary)';
+                }
+              }}
+              onMouseLeave={e => {
+                if (typeFilter !== t) {
+                  e.currentTarget.style.color = 'var(--text-muted)';
+                }
+              }}
+            >
               {t.charAt(0).toUpperCase() + t.slice(1)}
             </button>
           ))}

@@ -545,23 +545,68 @@ export default function SettingsPage() {
       </div>
 
       {/* Provider Filter */}
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 24, flexWrap: 'wrap' }}>
-        <Filter width={13} height={13} style={{ color: 'var(--text-muted)' }} />
+      <div style={{ display: 'flex', width: 'fit-content', gap: 0, alignItems: 'center', background: 'var(--bg-elevated)', borderRadius: 14, padding: 4, border: '1px solid var(--border)' }}>
         <button
-          className={`type-pill ${providerFilter === 'all' ? 'select' : ''}`}
-          style={{ fontSize: 11, height: 'auto', padding: '4px 12px' }}
+          style={{ 
+            fontSize: 12, 
+            padding: '6px 16px',
+            fontWeight: 600,
+            borderRadius: 10,
+            border: 'none',
+            background: providerFilter === 'all' ? 'var(--bg-surface)' : 'transparent',
+            color: providerFilter === 'all' ? 'var(--text-primary)' : 'var(--text-muted)',
+            transition: 'all 150ms ease',
+            cursor: 'pointer',
+            boxShadow: providerFilter === 'all' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+            whiteSpace: 'nowrap',
+          }}
           onClick={() => setProviderFilter('all')}
+          onMouseEnter={e => {
+            if (providerFilter !== 'all') {
+              e.currentTarget.style.color = 'var(--text-primary)';
+            }
+          }}
+          onMouseLeave={e => {
+            if (providerFilter !== 'all') {
+              e.currentTarget.style.color = 'var(--text-muted)';
+            }
+          }}
         >
           All Providers
         </button>
         {uniqueProviders.map(provider => (
           <button
             key={provider}
-            className={`type-pill ${providerFilter === provider ? 'select' : ''}`}
-            style={{ fontSize: 11, height: 'auto', padding: '4px 12px' }}
+            style={{ 
+              fontSize: 12, 
+              padding: '6px 16px',
+              fontWeight: 600,
+              borderRadius: 6,
+              border: 'none',
+              background: providerFilter === provider ? 'var(--bg-surface)' : 'transparent',
+              color: providerFilter === provider ? 'var(--text-primary)' : 'var(--text-muted)',
+              transition: 'all 150ms ease',
+              cursor: 'pointer',
+              boxShadow: providerFilter === provider ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              whiteSpace: 'nowrap',
+            }}
             onClick={() => setProviderFilter(provider)}
+            onMouseEnter={e => {
+              if (providerFilter !== provider) {
+                e.currentTarget.style.color = 'var(--text-primary)';
+              }
+            }}
+            onMouseLeave={e => {
+              if (providerFilter !== provider) {
+                e.currentTarget.style.color = 'var(--text-muted)';
+              }
+            }}
           >
-            {PROVIDER_LABELS[provider]?.icon} {PROVIDER_LABELS[provider]?.label || provider}
+            <span>{PROVIDER_LABELS[provider]?.icon}</span>
+            <span>{PROVIDER_LABELS[provider]?.label || provider}</span>
           </button>
         ))}
       </div>
