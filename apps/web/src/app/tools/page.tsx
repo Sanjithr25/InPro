@@ -30,15 +30,20 @@ const saveCollapsed = (s: Set<string>) =>
   localStorage.setItem(LS_KEY, JSON.stringify([...s]));
 
 // ─── Directory Picker Modal ───────────────────────────────────────────────────
-// Uses the backend fsApi so we always get a real absolute path.
+// Styled to match Windows 11 File Explorer
 
 function DirPicker({ onSelect, onClose }: { onSelect: (path: string) => void; onClose: () => void }) {
   const [browse, setBrowse] = useState<FsBrowseResult | null>(null);
   const [loading, setLoading] = useState(false);
+  const [pathInput, setPathInput] = useState('');
 
   const go = async (path: string) => {
     setLoading(true);
-    try { setBrowse(await fsApi.browse(path)); }
+    try { 
+      const result = await fsApi.browse(path);
+      setBrowse(result);
+      setPathInput(result.current);
+    }
     catch (e: any) { alert(e.message); }
     finally { setLoading(false); }
   };
@@ -47,80 +52,334 @@ function DirPicker({ onSelect, onClose }: { onSelect: (path: string) => void; on
     fsApi.home().then(h => go(h.home)).catch(() => go('C:\\'));
   }, []);
 
+  const pathParts = browse?.current.split(/[/\\]/).filter(Boolean) || [];
+
   return (
     <div style={{
       position: 'fixed', inset: 0, zIndex: 1000,
-      background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)',
+      background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(6px)',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
     }} onClick={onClose}>
       <div style={{
-        background: 'var(--bg-elevated)', border: '1px solid var(--border)',
-        borderRadius: 16, padding: 28, width: 500, maxHeight: '72vh',
-        display: 'flex', flexDirection: 'column', gap: 14,
-        boxShadow: '0 24px 64px rgba(0,0,0,0.5)',
+        background: '#202020',
+        border: '1px solid #3a3a3a',
+        borderRadius: 8,
+        width: 900,
+        height: 600,
+        maxHeight: '85vh',
+        display: 'flex',
+        flexDirection: 'column',
+        boxShadow: '0 24px 64px rgba(0,0,0,0.8)',
+        overflow: 'hidden',
       }} onClick={e => e.stopPropagation()}>
 
-        {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <FolderOpen width={18} height={18} style={{ color: 'var(--accent-hover)' }} />
-            <span style={{ fontWeight: 700, fontSize: 15 }}>Choose Sandbox Root</span>
-          </div>
-          <button className="btn-icon" onClick={onClose}><X width={14} height={14} /></button>
-        </div>
-
-        {/* Current path breadcrumb */}
+        {/* Title Bar */}
         <div style={{
-          background: 'var(--bg-base)', borderRadius: 8, padding: '7px 12px',
-          fontSize: 12, color: 'var(--accent-hover)', wordBreak: 'break-all',
-          fontFamily: 'monospace', border: '1px solid var(--border)',
+          background: '#2b2b2b',
+          borderBottom: '1px solid #3a3a3a',
+          padding: '12px 16px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
         }}>
-          {browse?.current || '…'}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <FolderOpen width={16} height={16} style={{ color: '#0078d4' }} />
+            <span style={{ fontWeight: 600, fontSize: 14, color: '#fff' }}>Open Folder</span>
+          </div>
+          <button 
+            onClick={onClose}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: '#fff',
+              cursor: 'pointer',
+              padding: '4px 8px',
+              borderRadius: 4,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = '#c42b1c'}
+            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+          >
+            <X width={16} height={16} />
+          </button>
         </div>
 
-        {/* Directory listing */}
-        <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
-          {loading ? (
-            <div style={{ display: 'flex', justifyContent: 'center', padding: 24 }}>
-              <Loader2 width={22} height={22} className="spin" />
-            </div>
-          ) : (
-            <>
-              {browse?.parent && (
-                <button
-                  className="nav-item"
-                  style={{ fontWeight: 500, fontSize: 13, gap: 8, color: 'var(--text-muted)' }}
-                  onClick={() => go(browse.parent!)}
-                >
-                  <ChevronRight width={13} height={13} style={{ transform: 'rotate(180deg)' }} />
-                  .. (Up)
-                </button>
-              )}
-              {browse?.children.map(child => (
-                <button
-                  key={child.path}
-                  className="nav-item"
-                  style={{ justifyContent: 'flex-start', gap: 8, fontWeight: 400, fontSize: 13 }}
-                  onClick={() => go(child.path)}
-                >
-                  <FolderOpen width={14} height={14} style={{ color: 'var(--accent-hover)', flexShrink: 0 }} />
-                  {child.name}
-                </button>
-              ))}
-              {browse?.children.length === 0 && (
-                <div style={{ padding: '16px 12px', fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic' }}>
-                  No subfolders — select this directory
+        {/* Navigation Bar */}
+        <div style={{
+          background: '#2b2b2b',
+          borderBottom: '1px solid #3a3a3a',
+          padding: '8px 12px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+        }}>
+          {/* Back/Forward buttons */}
+          <button
+            onClick={() => browse?.parent && go(browse.parent)}
+            disabled={!browse?.parent}
+            style={{
+              background: browse?.parent ? '#3a3a3a' : '#2b2b2b',
+              border: '1px solid #4a4a4a',
+              borderRadius: 4,
+              padding: '6px 10px',
+              cursor: browse?.parent ? 'pointer' : 'not-allowed',
+              color: browse?.parent ? '#fff' : '#666',
+              display: 'flex',
+              alignItems: 'center',
+            }}
+            onMouseEnter={e => browse?.parent && (e.currentTarget.style.background = '#4a4a4a')}
+            onMouseLeave={e => browse?.parent && (e.currentTarget.style.background = '#3a3a3a')}
+          >
+            <ChevronRight width={14} height={14} style={{ transform: 'rotate(180deg)' }} />
+          </button>
+
+          <button
+            onClick={() => browse?.parent && go(browse.parent)}
+            disabled={!browse?.parent}
+            style={{
+              background: browse?.parent ? '#3a3a3a' : '#2b2b2b',
+              border: '1px solid #4a4a4a',
+              borderRadius: 4,
+              padding: '6px 10px',
+              cursor: browse?.parent ? 'pointer' : 'not-allowed',
+              color: browse?.parent ? '#fff' : '#666',
+              display: 'flex',
+              alignItems: 'center',
+            }}
+            onMouseEnter={e => browse?.parent && (e.currentTarget.style.background = '#4a4a4a')}
+            onMouseLeave={e => browse?.parent && (e.currentTarget.style.background = '#3a3a3a')}
+          >
+            <ChevronRight width={14} height={14} />
+          </button>
+
+          {/* Breadcrumb Path */}
+          <div style={{
+            flex: 1,
+            background: '#1a1a1a',
+            border: '1px solid #4a4a4a',
+            borderRadius: 4,
+            padding: '6px 12px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            overflow: 'hidden',
+          }}>
+            <FolderOpen width={14} height={14} style={{ color: '#0078d4', flexShrink: 0 }} />
+            <div style={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              gap: 6, 
+              fontSize: 12, 
+              color: '#fff',
+              overflow: 'hidden',
+              whiteSpace: 'nowrap',
+            }}>
+              {pathParts.map((part, idx) => (
+                <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {idx > 0 && <ChevronRight width={12} height={12} style={{ color: '#666' }} />}
+                  <span style={{ cursor: 'pointer' }} onClick={() => {
+                    const newPath = pathParts.slice(0, idx + 1).join('\\');
+                    go(newPath.includes(':') ? newPath : '\\' + newPath);
+                  }}>
+                    {part}
+                  </span>
                 </div>
-              )}
-            </>
-          )}
+              ))}
+            </div>
+          </div>
+
+          {/* Refresh button */}
+          <button
+            onClick={() => browse && go(browse.current)}
+            style={{
+              background: '#3a3a3a',
+              border: '1px solid #4a4a4a',
+              borderRadius: 4,
+              padding: '6px 10px',
+              cursor: 'pointer',
+              color: '#fff',
+              display: 'flex',
+              alignItems: 'center',
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = '#4a4a4a'}
+            onMouseLeave={e => e.currentTarget.style.background = '#3a3a3a'}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+            </svg>
+          </button>
         </div>
 
-        {/* Actions */}
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', paddingTop: 4, borderTop: '1px solid var(--border)' }}>
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={() => { if (browse) { onSelect(browse.current); onClose(); } }}>
-            <FolderOpen width={14} height={14} /> Select This Folder
+        {/* Main Content Area */}
+        <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+          {/* Sidebar */}
+          <div style={{
+            width: 180,
+            background: '#1a1a1a',
+            borderRight: '1px solid #3a3a3a',
+            padding: '12px 8px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 2,
+          }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: '#999', padding: '8px 12px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Quick Access
+            </div>
+            {[
+              { icon: '🏠', label: 'Home', color: '#0078d4' },
+              { icon: '🖥️', label: 'Desktop', color: '#0078d4' },
+              { icon: '📄', label: 'Documents', color: '#0078d4' },
+              { icon: '📥', label: 'Downloads', color: '#0078d4' },
+            ].map(item => (
+              <button
+                key={item.label}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  padding: '8px 12px',
+                  borderRadius: 4,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  color: '#fff',
+                  fontSize: 13,
+                  textAlign: 'left',
+                }}
+                onMouseEnter={e => e.currentTarget.style.background = '#2b2b2b'}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+              >
+                <span style={{ fontSize: 16 }}>{item.icon}</span>
+                <span>{item.label}</span>
+              </button>
+            ))}
+          </div>
+
+          {/* File List */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            {/* Column Headers */}
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 180px 120px',
+              padding: '8px 16px',
+              background: '#2b2b2b',
+              borderBottom: '1px solid #3a3a3a',
+              fontSize: 11,
+              fontWeight: 600,
+              color: '#999',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+            }}>
+              <span>Name</span>
+              <span>Date modified</span>
+              <span>Type</span>
+            </div>
+
+            {/* Scrollable File List */}
+            <div style={{ flex: 1, overflowY: 'auto', background: '#1a1a1a' }}>
+              {loading ? (
+                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: 40 }}>
+                  <Loader2 width={24} height={24} className="spin" style={{ color: '#0078d4' }} />
+                </div>
+              ) : (
+                <>
+                  {browse?.children.map(child => (
+                    <div
+                      key={child.path}
+                      onDoubleClick={() => go(child.path)}
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: '1fr 180px 120px',
+                        padding: '10px 16px',
+                        cursor: 'pointer',
+                        borderBottom: '1px solid #2b2b2b',
+                        alignItems: 'center',
+                      }}
+                      onMouseEnter={e => e.currentTarget.style.background = '#2b2b2b'}
+                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <FolderOpen width={16} height={16} style={{ color: '#ffd700', flexShrink: 0 }} />
+                        <span style={{ fontSize: 13, color: '#fff' }}>{child.name}</span>
+                      </div>
+                      <span style={{ fontSize: 12, color: '#999' }}>—</span>
+                      <span style={{ fontSize: 12, color: '#999' }}>File folder</span>
+                    </div>
+                  ))}
+                  {browse?.children.length === 0 && (
+                    <div style={{ padding: '40px 20px', textAlign: 'center', color: '#666', fontSize: 13 }}>
+                      This folder is empty
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Bottom Bar */}
+        <div style={{
+          background: '#2b2b2b',
+          borderTop: '1px solid #3a3a3a',
+          padding: '12px 16px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+        }}>
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 12, color: '#999', minWidth: 60 }}>Folder:</span>
+            <input
+              type="text"
+              value={pathInput}
+              onChange={e => setPathInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && go(pathInput)}
+              style={{
+                flex: 1,
+                background: '#1a1a1a',
+                border: '1px solid #4a4a4a',
+                borderRadius: 4,
+                padding: '6px 10px',
+                color: '#fff',
+                fontSize: 12,
+                fontFamily: 'monospace',
+              }}
+            />
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              background: '#3a3a3a',
+              border: '1px solid #4a4a4a',
+              borderRadius: 4,
+              padding: '8px 20px',
+              cursor: 'pointer',
+              color: '#fff',
+              fontSize: 13,
+              fontWeight: 500,
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = '#4a4a4a'}
+            onMouseLeave={e => e.currentTarget.style.background = '#3a3a3a'}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => { if (browse) { onSelect(browse.current); onClose(); } }}
+            style={{
+              background: '#0078d4',
+              border: 'none',
+              borderRadius: 4,
+              padding: '8px 20px',
+              cursor: 'pointer',
+              color: '#fff',
+              fontSize: 13,
+              fontWeight: 500,
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = '#1084d8'}
+            onMouseLeave={e => e.currentTarget.style.background = '#0078d4'}
+          >
+            Select folder
           </button>
         </div>
       </div>
