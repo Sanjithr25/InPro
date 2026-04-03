@@ -183,4 +183,21 @@ router.delete('/:id', handle(async (req, res) => {
   });
 }));
 
+// GET /api/llm-settings/:id/api-key (fetch decrypted API key)
+router.get('/:id/api-key', handle(async (req, res) => {
+  const { id } = req.params;
+  
+  const result = await pool.query(
+    `SELECT api_key FROM llm_settings WHERE id = $1`,
+    [id]
+  );
+
+  if (result.rows.length === 0) {
+    res.status(404).json({ error: 'LLM setting not found' });
+    return;
+  }
+
+  res.json({ api_key: result.rows[0].api_key });
+}));
+
 export default router;

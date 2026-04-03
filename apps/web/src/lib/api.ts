@@ -194,7 +194,7 @@ export const llmApi = {
   list: () => req<LlmSettingRow[]>('/api/llm-settings'),
   update: (id: string, body: Partial<LlmSettingRow> & { api_key?: string }) =>
     req<{ updated: boolean }>(`/api/llm-settings/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
-  create: (body: { provider: string; api_key?: string; base_url?: string; model_name: string; is_default?: boolean }) =>
+  create: (body: { provider: string; api_key?: string; base_url?: string; model_name: string; is_default?: boolean; max_turns?: number; timeout_ms?: number; temperature?: number }) =>
     req<{ id: string }>('/api/llm-settings', { method: 'POST', body: JSON.stringify(body) }),
   delete: (id: string) =>
     req<{ deleted: boolean; agentsUpdated: number; message: string }>(`/api/llm-settings/${id}`, { method: 'DELETE' }),
